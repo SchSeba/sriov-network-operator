@@ -45,12 +45,44 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        resources:
-          limits:
-            cpu: 100m
-            memory: 30Mi
-          requests:
-            cpu: 100m
-            memory: 20Mi
-      serviceAccountName: controller-manager
-      terminationGracePeriodSeconds: 10
+        env:
+          - name: WATCH_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: SRIOV_CNI_IMAGE
+            value: quay.io/openshift/origin-sriov-cni:4.15
+          - name: SRIOV_DEVICE_PLUGIN_IMAGE
+            value: quay.io/openshift/origin-sriov-network-device-plugin:4.15
+          - name: NETWORK_RESOURCES_INJECTOR_IMAGE
+            value: quay.io/openshift/origin-sriov-dp-admission-controller:4.15
+          - name: OPERATOR_NAME
+            value: sriov-network-operator
+          - name: SRIOV_NETWORK_CONFIG_DAEMON_IMAGE
+            value: quay.io/openshift/origin-sriov-network-config-daemon:4.15
+          - name: SRIOV_NETWORK_WEBHOOK_IMAGE
+            value: quay.io/openshift/origin-sriov-network-webhook:4.15
+          - name: SRIOV_INFINIBAND_CNI_IMAGE
+            value: quay.io/openshift/origin-sriov-infiniband-cni:4.15
+          - name: RESOURCE_PREFIX
+            value: openshift.io
+          - name: ADMISSION_CONTROLLERS_ENABLED
+            value: "true"
+          - name: ADMISSION_CONTROLLERS_CERTIFICATES_OPERATOR_SECRET_NAME
+            value: operator-webhook-service
+          - name: ADMISSION_CONTROLLERS_CERTIFICATES_INJECTOR_SECRET_NAME
+            value: network-resources-injector-secret
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: RELEASE_VERSION
+            value: 4.15.0
