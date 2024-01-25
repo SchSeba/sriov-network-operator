@@ -166,6 +166,23 @@ method=disabled
 [proxy]' > /etc/NetworkManager/system-connections/multi.nmconnection
 
 chmod 600 /etc/NetworkManager/system-connections/multi.nmconnection
+
+echo '[Unit]
+Description=disable checksum offload to avoid vf bug
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -c "ethtool --offload  eth1  rx off  tx off && ethtool -K eth1 gso off"
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=default.target' > /etc/systemd/system/disable-offload.service
+
+systemctl daemon-reload
+systemctl enable --now disable-offload
+
 systemctl restart NetworkManager
 
 EOF
@@ -271,8 +288,11 @@ echo "## build webhook image"
 podman build -t "${SRIOV_NETWORK_WEBHOOK_IMAGE}" -f "${root}/Dockerfile.webhook" "${root}"
 
 podman push --tls-verify=false "${SRIOV_NETWORK_OPERATOR_IMAGE}"
+podman rmi -fi ${SRIOV_NETWORK_OPERATOR_IMAGE}
 podman push --tls-verify=false "${SRIOV_NETWORK_CONFIG_DAEMON_IMAGE}"
+podman rmi -fi ${SRIOV_NETWORK_CONFIG_DAEMON_IMAGE}
 podman push --tls-verify=false "${SRIOV_NETWORK_WEBHOOK_IMAGE}"
+podman rmi -fi ${SRIOV_NETWORK_WEBHOOK_IMAGE}
 
 # remove the crio bridge and let flannel to recreate
 kcli ssh $cluster_name-ctlplane-0 << EOF

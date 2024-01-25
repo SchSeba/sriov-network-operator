@@ -1,8 +1,8 @@
-# Setting SHELL to bash allows bash commands to be executed by recipes.
-# This is a requirement for 'setup-envtest.sh' in the test target.
-# Options are set to exit when a recipe line exits non-zero or a piped command fails.
-SHELL = /usr/bin/env bash -o pipefail
-.SHELLFLAGS = -ec
+# Setting SHELL to bash allows bash commands to be executed by recipes. 
+# This is a requirement for 'setup-envtest.sh' in the test target. 
+# Options are set to exit when a recipe line exits non-zero or a piped command fails. 
+SHELL = /usr/bin/env bash -o pipefail 
+.SHELLFLAGS = -ec 
 CURPATH=$(PWD)
 TARGET_DIR=$(CURPATH)/build/_output
 BIN_DIR=$(CURPATH)/bin
@@ -51,13 +51,7 @@ GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
 # golangci-lint version should be updated periodically
 # we keep it fixed to avoid it from unexpectedly failing on the project
 # in case of a version bump
-GOLANGCI_LINT_VER = v1.51.0
-
-GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
-# golangci-lint version should be updated periodically
-# we keep it fixed to avoid it from unexpectedly failing on the project
-# in case of a version bump
-GOLANGCI_LINT_VER = v1.46.1
+GOLANGCI_LINT_VER = v1.55.2
 
 
 .PHONY: all build clean gendeepcopy test test-e2e test-e2e-k8s run image fmt sync-manifests test-e2e-conformance manifests update-codegen
@@ -114,6 +108,7 @@ manifests: controller-gen
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./..." output:crd:artifacts:config=$(CRD_BASES)
 	cp ./config/crd/bases/* ./deployment/sriov-network-operator/crds/
 
+
 sync-manifests-%: manifests
 	@mkdir -p manifests/$*
 	sed '2{/---/d}' $(CRD_BASES)/sriovnetwork.openshift.io_sriovibnetworks.yaml | awk 'NF' > manifests/$*/sriov-network-operator-sriovibnetworks_crd.yaml
@@ -162,7 +157,7 @@ envtest: ## Download envtest-setup locally if necessary.
 
 GOMOCK = $(shell pwd)/bin/mockgen
 gomock:
-	$(call go-get-tool,$(GOMOCK),github.com/golang/mock/mockgen@v1.6.0)
+	$(call go-install-tool,$(GOMOCK),github.com/golang/mock/mockgen@v1.6.0)
 
 # go-install-tool will 'go install' any package $2 and install it to $1.
 define go-install-tool
@@ -208,7 +203,7 @@ redeploy-operator-virtual-cluster:
 	./hack/virtual-cluster-redeploy.sh
 
 test-e2e-validation-only:
-	SUITE=./test/validation ./hack/run-e2e-conformance.sh
+	SUITE=./test/validation ./hack/run-e2e-conformance.sh	
 
 test-e2e: generate vet manifests skopeo envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir=/tmp -p path)"; source hack/env.sh; HOME="$(shell pwd)" go test ./test/e2e/... -timeout 60m -coverprofile cover.out -v
