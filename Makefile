@@ -51,7 +51,7 @@ GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
 # golangci-lint version should be updated periodically
 # we keep it fixed to avoid it from unexpectedly failing on the project
 # in case of a version bump
-GOLANGCI_LINT_VER = v1.51.0
+GOLANGCI_LINT_VER = v1.55.2
 
 GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
 # golangci-lint version should be updated periodically
@@ -162,7 +162,7 @@ envtest: ## Download envtest-setup locally if necessary.
 
 GOMOCK = $(shell pwd)/bin/mockgen
 gomock:
-	$(call go-get-tool,$(GOMOCK),github.com/golang/mock/mockgen@v1.6.0)
+	$(call go-install-tool,$(GOMOCK),github.com/golang/mock/mockgen@v1.6.0)
 
 # go-install-tool will 'go install' any package $2 and install it to $1.
 define go-install-tool
