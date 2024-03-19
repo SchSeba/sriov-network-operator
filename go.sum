@@ -429,8 +429,8 @@ github.com/vincent-petithory/dataurl v0.0.0-20160330182126-9a301d65acbb/go.mod h
 github.com/vincent-petithory/dataurl v1.0.0 h1:cXw+kPto8NLuJtlMsI152irrVw9fRDX8AbShPRpg2CI=
 github.com/vincent-petithory/dataurl v1.0.0/go.mod h1:FHafX5vmDzyP+1CQATJn7WFKc9CvnvxyvZy6I1MrG/U=
 github.com/vishvananda/netlink v1.1.1-0.20210518155637-4cb3795f2ccb/go.mod h1:twkDnbuQxJYemMlGd4JFIcuhgX83tXhKS2B/PRMpOho=
-github.com/vishvananda/netlink v1.2.1-beta.2.0.20240221172127-ec7bcb248e94 h1:EO+D8nUD4bAhHHcJUSvH+8puZrDrcjc50tePSevGQrw=
-github.com/vishvananda/netlink v1.2.1-beta.2.0.20240221172127-ec7bcb248e94/go.mod h1:whJevzBpTrid75eZy99s3DqCmy05NfibNaF2Ol5Ox5A=
+github.com/vishvananda/netlink v1.2.1-beta.2.0.20240304185031-70def89fcbfb h1:nXrfaBpj4+3+HBiBglCSXBG0BYdqEUN/UfjKVAlxnho=
+github.com/vishvananda/netlink v1.2.1-beta.2.0.20240304185031-70def89fcbfb/go.mod h1:whJevzBpTrid75eZy99s3DqCmy05NfibNaF2Ol5Ox5A=
 github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae/go.mod h1:DD4vA1DwXk04H54A1oHXtwZmA0grkVMdPxx/VGLCah0=
 github.com/vishvananda/netns v0.0.4 h1:Oeaw1EM2JMxD51g9uhtC0D7erkIjgmj8+JZc26m1YX8=
 github.com/vishvananda/netns v0.0.4/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=

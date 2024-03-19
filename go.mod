@@ -25,8 +25,8 @@ require (
 	github.com/safchain/ethtool v0.3.0
 	github.com/spf13/cobra v1.7.0
 	github.com/stretchr/testify v1.8.4
-	github.com/vishvananda/netlink v1.2.1-beta.2.0.20240221172127-ec7bcb248e94
-	github.com/vishvananda/netns v0.0.4
+	github.com/vishvananda/netlink main 
+	github.com/vishvananda/netns master
 	go.uber.org/zap v1.25.0
 	golang.org/x/time v0.3.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -37,7 +37,7 @@ require (
 	k8s.io/code-generator v0.28.3
 	k8s.io/kubectl v0.28.3
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
-	sigs.k8s.io/controller-runtime v0.16.3
+	sigs.k8s.io/controller-runtime main
 )
 
 require (
