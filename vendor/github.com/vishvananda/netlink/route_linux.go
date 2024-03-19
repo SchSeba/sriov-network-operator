@@ -790,6 +790,21 @@ func (h *Handle) RouteAddEcmp(route *Route) error {
 	return err
 }
 
+// RouteChange will change an existing route in the system.
+// Equivalent to: `ip route change $route`
+func RouteChange(route *Route) error {
+	return pkgHandle.RouteChange(route)
+}
+
+// RouteChange will change an existing route in the system.
+// Equivalent to: `ip route change $route`
+func (h *Handle) RouteChange(route *Route) error {
+	flags := unix.NLM_F_REPLACE | unix.NLM_F_ACK
+	req := h.newNetlinkRequest(unix.RTM_NEWROUTE, flags)
+	_, err := h.routeHandle(route, req, nl.NewRtMsg())
+	return err
+}
+
 // RouteReplace will add a route to the system.
 // Equivalent to: `ip route replace $route`
 func RouteReplace(route *Route) error {
@@ -1424,6 +1439,7 @@ func deserializeRoute(m []byte) (Route, error) {
 // RouteGetWithOptions
 type RouteGetOptions struct {
 	Iif      string
+	IifIndex int
 	Oif      string
 	VrfName  string
 	SrcAddr  net.IP
@@ -1475,7 +1491,7 @@ func (h *Handle) RouteGetWithOptions(destination net.IP, options *RouteGetOption
 
 	if options != nil {
 		if options.VrfName != "" {
-			link, err := LinkByName(options.VrfName)
+			link, err := h.LinkByName(options.VrfName)
 			if err != nil {
 				return nil, err
 			}
@@ -1485,20 +1501,27 @@ func (h *Handle) RouteGetWithOptions(destination net.IP, options *RouteGetOption
 			req.AddData(nl.NewRtAttr(unix.RTA_OIF, b))
 		}
 
+		iifIndex := 0
 		if len(options.Iif) > 0 {
-			link, err := LinkByName(options.Iif)
+			link, err := h.LinkByName(options.Iif)
 			if err != nil {
 				return nil, err
 			}
 
+			iifIndex = link.Attrs().Index
+		} else if options.IifIndex > 0 {
+			iifIndex = options.IifIndex
+		}
+
+		if iifIndex > 0 {
 			b := make([]byte, 4)
-			native.PutUint32(b, uint32(link.Attrs().Index))
+			native.PutUint32(b, uint32(iifIndex))
 
 			req.AddData(nl.NewRtAttr(unix.RTA_IIF, b))
 		}
 
 		if len(options.Oif) > 0 {
-			link, err := LinkByName(options.Oif)
+			link, err := h.LinkByName(options.Oif)
 			if err != nil {
 				return nil, err
 			}
@@ -1630,6 +1653,9 @@ func routeSubscribeAt(newNs, curNs netns.NsHandle, ch chan<- RouteUpdate, done <
 		for {
 			msgs, from, err := s.Receive()
 			if err != nil {
+				if err == syscall.EAGAIN {
+					continue
+				}
 				if cberr != nil {
 					cberr(fmt.Errorf("Receive failed: %v",
 						err))
@@ -1664,7 +1690,11 @@ func routeSubscribeAt(newNs, curNs netns.NsHandle, ch chan<- RouteUpdate, done <
 					}
 					continue
 				}
-				ch <- RouteUpdate{Type: m.Header.Type, Route: route}
+				ch <- RouteUpdate{
+					Type:    m.Header.Type,
+					NlFlags: m.Header.Flags & (unix.NLM_F_REPLACE | unix.NLM_F_EXCL | unix.NLM_F_CREATE | unix.NLM_F_APPEND),
+					Route:   route,
+				}
 			}
 		}
 	}()

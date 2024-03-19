@@ -1867,6 +1867,9 @@ func (h *Handle) LinkByName(name string) (Link, error) {
 	req.AddData(attr)
 
 	nameData := nl.NewRtAttr(unix.IFLA_IFNAME, nl.ZeroTerminated(name))
+	if len(name) > 15 {
+		nameData = nl.NewRtAttr(unix.IFLA_ALT_IFNAME, nl.ZeroTerminated(name))
+	}
 	req.AddData(nameData)
 
 	link, err := execGetLink(req)
@@ -2424,6 +2427,9 @@ func linkSubscribeAt(newNs, curNs netns.NsHandle, ch chan<- LinkUpdate, done <-c
 		for {
 			msgs, from, err := s.Receive()
 			if err != nil {
+				if err == syscall.EAGAIN {
+					continue
+				}
 				if cberr != nil {
 					cberr(fmt.Errorf("Receive failed: %v",
 						err))

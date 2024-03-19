@@ -74,17 +74,19 @@ func (h *Handle) AddrDel(link Link, addr *Addr) error {
 }
 
 func (h *Handle) addrHandle(link Link, addr *Addr, req *nl.NetlinkRequest) error {
-	base := link.Attrs()
-	if addr.Label != "" && !strings.HasPrefix(addr.Label, base.Name) {
-		return fmt.Errorf("label must begin with interface name")
-	}
-	h.ensureIndex(base)
-
 	family := nl.GetIPFamily(addr.IP)
-
 	msg := nl.NewIfAddrmsg(family)
-	msg.Index = uint32(base.Index)
 	msg.Scope = uint8(addr.Scope)
+	if link == nil {
+		msg.Index = uint32(addr.LinkIndex)
+	} else {
+		base := link.Attrs()
+		if addr.Label != "" && !strings.HasPrefix(addr.Label, base.Name) {
+			return fmt.Errorf("label must begin with interface name")
+		}
+		h.ensureIndex(base)
+		msg.Index = uint32(base.Index)
+	}
 	mask := addr.Mask
 	if addr.Peer != nil {
 		mask = addr.Peer.Mask
@@ -365,6 +367,9 @@ func addrSubscribeAt(newNs, curNs netns.NsHandle, ch chan<- AddrUpdate, done <-c
 		for {
 			msgs, from, err := s.Receive()
 			if err != nil {
+				if err == syscall.EAGAIN {
+					continue
+				}
 				if cberr != nil {
 					cberr(fmt.Errorf("Receive failed: %v",
 						err))
