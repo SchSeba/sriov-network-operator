@@ -1,15 +1,11 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"os/exec"
-	"path"
-	"strconv"
-	"strings"
+	"reflect"
 	"sync"
 	"time"
 
@@ -28,6 +24,7 @@ import (
 	snclientset "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/client/clientset/versioned"
 	sninformer "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/client/informers/externalversions"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/featuregate"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/helper"
 	snolog "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/log"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms"
@@ -87,11 +84,9 @@ type Daemon struct {
 	workqueue workqueue.RateLimitingInterface
 
 	eventRecorder *EventRecorder
-}
 
-const (
-	udevScriptsPath = "/bindata/scripts/load-udev.sh"
-)
+	featureGate featuregate.FeatureGate
+}
 
 func New(
 	client client.Client,
@@ -104,6 +99,7 @@ func New(
 	syncCh <-chan struct{},
 	refreshCh chan<- Message,
 	er *EventRecorder,
+	featureGates featuregate.FeatureGate,
 	disabledPlugins []string,
 ) *Daemon {
 	return &Daemon{
@@ -122,7 +118,9 @@ func New(
 			&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(updateDelay), 1)},
 			workqueue.NewItemExponentialFailureRateLimiter(1*time.Second, maxUpdateBackoff)), "SriovNetworkNodeState"),
 		eventRecorder:   er,
+		featureGate:     featureGates,
 		disabledPlugins: disabledPlugins,
+		mu:              &sync.Mutex{},
 	}
 }
 
@@ -138,7 +136,7 @@ func (dn *Daemon) Run(stopCh <-chan struct{}, exitCh <-chan error) error {
 
 	if !vars.UsingSystemdMode {
 		log.Log.V(0).Info("Run(): daemon running in daemon mode")
-		dn.HostHelpers.TryEnableRdma()
+		dn.HostHelpers.CheckRDMAEnabled()
 		dn.HostHelpers.TryEnableTun()
 		dn.HostHelpers.TryEnableVhostNet()
 		err := systemd.CleanSriovFilesFromHost(vars.ClusterType == consts.ClusterTypeOpenshift)
@@ -156,13 +154,12 @@ func (dn *Daemon) Run(stopCh <-chan struct{}, exitCh <-chan error) error {
 	if err := dn.prepareNMUdevRule(); err != nil {
 		log.Log.Error(err, "failed to prepare udev files to disable network manager on requested VFs")
 	}
-	if err := dn.tryCreateSwitchdevUdevRule(); err != nil {
-		log.Log.Error(err, "failed to create udev files for switchdev")
+	if err := dn.HostHelpers.PrepareVFRepUdevRule(); err != nil {
+		log.Log.Error(err, "failed to prepare udev files to rename VF representors for requested VFs")
 	}
 
 	var timeout int64 = 5
 	var metadataKey = "metadata.name"
-	dn.mu = &sync.Mutex{}
 	informerFactory := sninformer.NewFilteredSharedInformerFactory(dn.sriovClient,
 		time.Second*15,
 		vars.Namespace,
@@ -221,11 +218,6 @@ func (dn *Daemon) Run(stopCh <-chan struct{}, exitCh <-chan error) error {
 				}
 			}
 			return err
-		case <-time.After(30 * time.Second):
-			log.Log.V(2).Info("Run(): period refresh")
-			if err := dn.tryCreateSwitchdevUdevRule(); err != nil {
-				log.Log.V(2).Error(err, "Could not create udev rule")
-			}
 		}
 	}
 }
@@ -300,6 +292,7 @@ func (dn *Daemon) operatorConfigAddHandler(obj interface{}) {
 }
 
 func (dn *Daemon) operatorConfigChangeHandler(old, new interface{}) {
+	oldCfg := old.(*sriovnetworkv1.SriovOperatorConfig)
 	newCfg := new.(*sriovnetworkv1.SriovOperatorConfig)
 	if newCfg.Namespace != vars.Namespace || newCfg.Name != consts.DefaultConfigName {
 		log.Log.V(2).Info("unsupported SriovOperatorConfig", "namespace", newCfg.Namespace, "name", newCfg.Name)
@@ -313,6 +306,13 @@ func (dn *Daemon) operatorConfigChangeHandler(old, new interface{}) {
 		dn.disableDrain = newDisableDrain
 		log.Log.Info("Set Disable Drain", "value", dn.disableDrain)
 	}
+
+	if !reflect.DeepEqual(oldCfg.Spec.FeatureGates, newCfg.Spec.FeatureGates) {
+		dn.featureGate.Init(newCfg.Spec.FeatureGates)
+		log.Log.Info("Updated featureGates", "featureGates", dn.featureGate.String())
+	}
+
+	vars.MlxPluginFwReset = dn.featureGate.IsEnabled(consts.MellanoxFirmwareResetFeatureGate)
 }
 
 func (dn *Daemon) nodeStateSyncHandler() error {
@@ -327,8 +327,19 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 	latest := dn.desiredNodeState.GetGeneration()
 	log.Log.V(0).Info("nodeStateSyncHandler(): new generation", "generation", latest)
 
-	if dn.currentNodeState.GetGeneration() == latest && !dn.isDrainCompleted() {
-		if vars.UsingSystemdMode {
+	// load plugins if it has not loaded
+	if len(dn.loadedPlugins) == 0 {
+		dn.loadedPlugins, err = loadPlugins(dn.desiredNodeState, dn.HostHelpers, dn.disabledPlugins)
+		if err != nil {
+			log.Log.Error(err, "nodeStateSyncHandler(): failed to enable vendor plugins")
+			return err
+		}
+	}
+
+	skipReconciliation := true
+	// if the operator complete the drain operator we should continue the configuration
+	if !dn.isDrainCompleted() {
+		if vars.UsingSystemdMode && dn.currentNodeState.GetGeneration() == latest {
 			serviceEnabled, err := dn.HostHelpers.IsServiceEnabled(systemd.SriovServicePath)
 			if err != nil {
 				log.Log.Error(err, "nodeStateSyncHandler(): failed to check if sriov-config service exist on host")
@@ -366,38 +377,17 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 				return nil
 			}
 		}
-		log.Log.V(0).Info("nodeStateSyncHandler(): Interface not changed")
-		if dn.desiredNodeState.Status.LastSyncError != "" ||
-			dn.desiredNodeState.Status.SyncStatus != consts.SyncStatusSucceeded {
-			dn.refreshCh <- Message{
-				syncStatus:    consts.SyncStatusSucceeded,
-				lastSyncError: "",
-			}
-			// wait for writer to refresh the status
-			<-dn.syncCh
-		}
 
-		return nil
-	}
-
-	if dn.desiredNodeState.GetGeneration() == 1 && len(dn.desiredNodeState.Spec.Interfaces) == 0 {
-		err = dn.HostHelpers.ClearPCIAddressFolder()
+		skipReconciliation, err = dn.shouldSkipReconciliation(dn.desiredNodeState)
 		if err != nil {
-			log.Log.Error(err, "failed to clear the PCI address configuration")
 			return err
 		}
+	}
 
-		log.Log.V(0).Info(
-			"nodeStateSyncHandler(): interface policy spec not yet set by controller for sriovNetworkNodeState",
-			"name", dn.desiredNodeState.Name)
-		if dn.desiredNodeState.Status.SyncStatus != "Succeeded" {
-			dn.refreshCh <- Message{
-				syncStatus:    "Succeeded",
-				lastSyncError: "",
-			}
-			// wait for writer to refresh status
-			<-dn.syncCh
-		}
+	// we are done with the configuration just return here
+	if dn.currentNodeState.GetGeneration() == dn.desiredNodeState.GetGeneration() &&
+		dn.desiredNodeState.Status.SyncStatus == consts.SyncStatusSucceeded && skipReconciliation {
+		log.Log.Info("Current state and desire state are equal together with sync status succeeded nothing to do")
 		return nil
 	}
 
@@ -417,15 +407,6 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 		return err
 	}
 	dn.desiredNodeState.Status = updatedState.Status
-
-	// load plugins if it has not loaded
-	if len(dn.loadedPlugins) == 0 {
-		dn.loadedPlugins, err = loadPlugins(dn.desiredNodeState, dn.HostHelpers, dn.disabledPlugins)
-		if err != nil {
-			log.Log.Error(err, "nodeStateSyncHandler(): failed to enable vendor plugins")
-			return err
-		}
-	}
 
 	reqReboot := false
 	reqDrain := false
@@ -483,6 +464,21 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 	log.Log.V(0).Info("nodeStateSyncHandler(): aggregated daemon",
 		"drain-required", reqDrain, "reboot-required", reqReboot, "disable-drain", dn.disableDrain)
 
+	// handle drain only if the plugin request drain, or we are already in a draining request state
+	if reqDrain || !utils.ObjectHasAnnotation(dn.desiredNodeState,
+		consts.NodeStateDrainAnnotationCurrent,
+		consts.DrainIdle) {
+		drainInProcess, err := dn.handleDrain(reqReboot)
+		if err != nil {
+			log.Log.Error(err, "failed to handle drain")
+			return err
+		}
+		if drainInProcess {
+			return nil
+		}
+	}
+
+	// apply the vendor plugins after we are done with drain if needed
 	for k, p := range dn.loadedPlugins {
 		// Skip both the general and virtual plugin apply them last
 		if k != GenericPluginName && k != VirtualPluginName {
@@ -494,16 +490,8 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 		}
 	}
 
-	// handle drain only if the plugin request drain, or we are already in a draining request state
-	if reqDrain || !utils.ObjectHasAnnotation(dn.desiredNodeState,
-		consts.NodeStateDrainAnnotationCurrent,
-		consts.DrainIdle) {
-		if err := dn.handleDrain(reqReboot); err != nil {
-			log.Log.Error(err, "failed to handle drain")
-			return err
-		}
-	}
-
+	// if we don't need to reboot, or we are not doing the configuration in systemd
+	// we apply the generic plugin
 	if !reqReboot && !vars.UsingSystemdMode {
 		// For BareMetal machines apply the generic plugin
 		selectedPlugin, ok := dn.loadedPlugins[GenericPluginName]
@@ -574,20 +562,84 @@ func (dn *Daemon) nodeStateSyncHandler() error {
 	return nil
 }
 
-func (dn *Daemon) handleDrain(reqReboot bool) error {
+func (dn *Daemon) shouldSkipReconciliation(latestState *sriovnetworkv1.SriovNetworkNodeState) (bool, error) {
+	log.Log.V(0).Info("shouldSkipReconciliation()")
+	var err error
+
+	// Skip when SriovNetworkNodeState object has just been created.
+	if latestState.GetGeneration() == 1 && len(latestState.Spec.Interfaces) == 0 {
+		err = dn.HostHelpers.ClearPCIAddressFolder()
+		if err != nil {
+			log.Log.Error(err, "failed to clear the PCI address configuration")
+			return false, err
+		}
+
+		log.Log.V(0).Info(
+			"shouldSkipReconciliation(): interface policy spec not yet set by controller for sriovNetworkNodeState",
+			"name", latestState.Name)
+		if latestState.Status.SyncStatus != consts.SyncStatusSucceeded {
+			dn.refreshCh <- Message{
+				syncStatus:    consts.SyncStatusSucceeded,
+				lastSyncError: "",
+			}
+			// wait for writer to refresh status
+			<-dn.syncCh
+		}
+		return true, nil
+	}
+
+	// Verify changes in the status of the SriovNetworkNodeState CR.
+	if dn.currentNodeState.GetGeneration() == latestState.GetGeneration() {
+		log.Log.V(0).Info("shouldSkipReconciliation() verifying status change")
+		for _, p := range dn.loadedPlugins {
+			// Verify changes in the status of the SriovNetworkNodeState CR.
+			log.Log.V(0).Info("shouldSkipReconciliation(): verifying status change for plugin", "pluginName", p.Name())
+			changed, err := p.CheckStatusChanges(latestState)
+			if err != nil {
+				return false, err
+			}
+			if changed {
+				log.Log.V(0).Info("shouldSkipReconciliation(): plugin require change", "pluginName", p.Name())
+				return false, nil
+			}
+		}
+
+		log.Log.V(0).Info("shouldSkipReconciliation(): Interface not changed")
+		if latestState.Status.LastSyncError != "" ||
+			latestState.Status.SyncStatus != consts.SyncStatusSucceeded {
+			dn.refreshCh <- Message{
+				syncStatus:    consts.SyncStatusSucceeded,
+				lastSyncError: "",
+			}
+			// wait for writer to refresh the status
+			<-dn.syncCh
+		}
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// handleDrain: adds the right annotation to the node and nodeState object
+// returns true if we need to finish the reconcile loop and wait for a new object
+func (dn *Daemon) handleDrain(reqReboot bool) (bool, error) {
+	// done with the drain we can continue with the configuration
 	if utils.ObjectHasAnnotation(dn.desiredNodeState, consts.NodeStateDrainAnnotationCurrent, consts.DrainComplete) {
 		log.Log.Info("handleDrain(): the node complete the draining")
-		return nil
+		return false, nil
 	}
 
+	// the operator is still draining the node so we reconcile
 	if utils.ObjectHasAnnotation(dn.desiredNodeState, consts.NodeStateDrainAnnotationCurrent, consts.Draining) {
 		log.Log.Info("handleDrain(): the node is still draining")
-		return nil
+		return true, nil
 	}
 
+	// drain is disabled we continue with the configuration
 	if dn.disableDrain {
 		log.Log.Info("handleDrain(): drain is disabled in sriovOperatorConfig")
-		return nil
+		return false, nil
 	}
 
 	if reqReboot {
@@ -595,33 +647,35 @@ func (dn *Daemon) handleDrain(reqReboot bool) error {
 		err := utils.AnnotateNode(context.Background(), vars.NodeName, consts.NodeDrainAnnotation, consts.RebootRequired, dn.client)
 		if err != nil {
 			log.Log.Error(err, "applyDrainRequired(): Failed to annotate node")
-			return err
+			return false, err
 		}
 
 		log.Log.Info("handleDrain(): apply 'Reboot_Required' annotation for nodeState")
 		if err := utils.AnnotateObject(context.Background(), dn.desiredNodeState,
 			consts.NodeStateDrainAnnotation,
 			consts.RebootRequired, dn.client); err != nil {
-			return err
+			return false, err
 		}
 
-		return nil
+		// the node was annotated we need to wait for the operator to finish the drain
+		return true, nil
 	}
 	log.Log.Info("handleDrain(): apply 'Drain_Required' annotation for node")
 	err := utils.AnnotateNode(context.Background(), vars.NodeName, consts.NodeDrainAnnotation, consts.DrainRequired, dn.client)
 	if err != nil {
 		log.Log.Error(err, "handleDrain(): Failed to annotate node")
-		return err
+		return false, err
 	}
 
 	log.Log.Info("handleDrain(): apply 'Drain_Required' annotation for nodeState")
 	if err := utils.AnnotateObject(context.Background(), dn.desiredNodeState,
 		consts.NodeStateDrainAnnotation,
 		consts.DrainRequired, dn.client); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	// the node was annotated we need to wait for the operator to finish the drain
+	return true, nil
 }
 
 func (dn *Daemon) restartDevicePluginPod() error {
@@ -629,7 +683,6 @@ func (dn *Daemon) restartDevicePluginPod() error {
 	defer dn.mu.Unlock()
 	log.Log.V(2).Info("restartDevicePluginPod(): try to restart device plugin pod")
 
-	var podToDelete string
 	pods, err := dn.kubeClient.CoreV1().Pods(vars.Namespace).List(context.Background(), metav1.ListOptions{
 		LabelSelector:   "app=sriov-device-plugin",
 		FieldSelector:   "spec.nodeName=" + vars.NodeName,
@@ -648,35 +701,37 @@ func (dn *Daemon) restartDevicePluginPod() error {
 		log.Log.Info("restartDevicePluginPod(): device plugin pod exited")
 		return nil
 	}
-	podToDelete = pods.Items[0].Name
 
-	log.Log.V(2).Info("restartDevicePluginPod(): Found device plugin pod, deleting it", "pod-name", podToDelete)
-	err = dn.kubeClient.CoreV1().Pods(vars.Namespace).Delete(context.Background(), podToDelete, metav1.DeleteOptions{})
-	if errors.IsNotFound(err) {
-		log.Log.Info("restartDevicePluginPod(): pod to delete not found")
-		return nil
-	}
-	if err != nil {
-		log.Log.Error(err, "restartDevicePluginPod(): Failed to delete device plugin pod, retrying")
-		return err
-	}
-
-	if err := wait.PollImmediateUntil(3*time.Second, func() (bool, error) {
-		_, err := dn.kubeClient.CoreV1().Pods(vars.Namespace).Get(context.Background(), podToDelete, metav1.GetOptions{})
+	for _, pod := range pods.Items {
+		podToDelete := pod.Name
+		log.Log.V(2).Info("restartDevicePluginPod(): Found device plugin pod, deleting it", "pod-name", podToDelete)
+		err = dn.kubeClient.CoreV1().Pods(vars.Namespace).Delete(context.Background(), podToDelete, metav1.DeleteOptions{})
 		if errors.IsNotFound(err) {
-			log.Log.Info("restartDevicePluginPod(): device plugin pod exited")
-			return true, nil
+			log.Log.Info("restartDevicePluginPod(): pod to delete not found")
+			continue
+		}
+		if err != nil {
+			log.Log.Error(err, "restartDevicePluginPod(): Failed to delete device plugin pod, retrying")
+			return err
 		}
 
-		if err != nil {
-			log.Log.Error(err, "restartDevicePluginPod(): Failed to check for device plugin exit, retrying")
-		} else {
-			log.Log.Info("restartDevicePluginPod(): waiting for device plugin pod to exit", "pod-name", podToDelete)
+		if err := wait.PollImmediateUntil(3*time.Second, func() (bool, error) {
+			_, err := dn.kubeClient.CoreV1().Pods(vars.Namespace).Get(context.Background(), podToDelete, metav1.GetOptions{})
+			if errors.IsNotFound(err) {
+				log.Log.Info("restartDevicePluginPod(): device plugin pod exited")
+				return true, nil
+			}
+
+			if err != nil {
+				log.Log.Error(err, "restartDevicePluginPod(): Failed to check for device plugin exit, retrying")
+			} else {
+				log.Log.Info("restartDevicePluginPod(): waiting for device plugin pod to exit", "pod-name", podToDelete)
+			}
+			return false, nil
+		}, dn.stopCh); err != nil {
+			log.Log.Error(err, "restartDevicePluginPod(): failed to wait for checking pod deletion")
+			return err
 		}
-		return false, nil
-	}, dn.stopCh); err != nil {
-		log.Log.Error(err, "restartDevicePluginPod(): failed to wait for checking pod deletion")
-		return err
 	}
 
 	return nil
@@ -702,74 +757,6 @@ func (dn *Daemon) rebootNode() {
 	if err := cmd.Run(); err != nil {
 		log.Log.Error(err, "failed to reboot node")
 	}
-}
-
-func (dn *Daemon) tryCreateSwitchdevUdevRule() error {
-	log.Log.V(2).Info("tryCreateSwitchdevUdevRule()")
-	nodeState, nodeStateErr := dn.sriovClient.SriovnetworkV1().SriovNetworkNodeStates(vars.Namespace).Get(
-		context.Background(),
-		vars.NodeName,
-		metav1.GetOptions{},
-	)
-	if nodeStateErr != nil {
-		log.Log.Error(nodeStateErr, "could not fetch node state, skip updating switchdev udev rules", "name", vars.NodeName)
-		return nil
-	}
-
-	var newContent string
-	filePath := path.Join(vars.FilesystemRoot, "/host/etc/udev/rules.d/20-switchdev.rules")
-
-	for _, ifaceStatus := range nodeState.Status.Interfaces {
-		if ifaceStatus.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
-			switchID, err := dn.HostHelpers.GetPhysSwitchID(ifaceStatus.Name)
-			if err != nil {
-				return err
-			}
-			portName, err := dn.HostHelpers.GetPhysPortName(ifaceStatus.Name)
-			if err != nil {
-				return err
-			}
-			newContent = newContent + fmt.Sprintf("SUBSYSTEM==\"net\", ACTION==\"add|move\", ATTRS{phys_switch_id}==\"%s\", ATTR{phys_port_name}==\"pf%svf*\", IMPORT{program}=\"/etc/udev/switchdev-vf-link-name.sh $attr{phys_port_name}\", NAME=\"%s_$env{NUMBER}\"\n", switchID, strings.TrimPrefix(portName, "p"), ifaceStatus.Name)
-		}
-	}
-
-	oldContent, err := os.ReadFile(filePath)
-	// if oldContent = newContent, don't do anything
-	if err == nil && newContent == string(oldContent) {
-		return nil
-	}
-
-	log.Log.V(2).Info("Old udev content and new content differ. Writing new content to file.",
-		"old-content", strings.TrimSuffix(string(oldContent), "\n"),
-		"new-content", strings.TrimSuffix(newContent, "\n"),
-		"path", filePath)
-
-	// if the file does not exist or if oldContent != newContent
-	// write to file and create it if it doesn't exist
-	err = os.WriteFile(filePath, []byte(newContent), 0664)
-	if err != nil {
-		log.Log.Error(err, "tryCreateSwitchdevUdevRule(): fail to write file")
-		return err
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("/bin/bash", path.Join(vars.FilesystemRoot, udevScriptsPath))
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	log.Log.V(2).Info("tryCreateSwitchdevUdevRule(): stdout", "output", cmd.Stdout)
-
-	i, err := strconv.Atoi(strings.TrimSpace(stdout.String()))
-	if err == nil {
-		if i == 0 {
-			log.Log.V(2).Info("tryCreateSwitchdevUdevRule(): switchdev udev rules loaded")
-		} else {
-			log.Log.V(2).Info("tryCreateSwitchdevUdevRule(): switchdev udev rules not loaded")
-		}
-	}
-	return nil
 }
 
 func (dn *Daemon) prepareNMUdevRule() error {

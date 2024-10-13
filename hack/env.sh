@@ -1,3 +1,5 @@
+#!/bin/bash
+
 if [ -z $SKIP_VAR_SET ]; then
         if ! skopeo -v &> /dev/null
         then
@@ -8,6 +10,12 @@ if [ -z $SKIP_VAR_SET ]; then
         export SRIOV_CNI_IMAGE=${SRIOV_CNI_IMAGE:-quay.io/openshift/origin-sriov-cni@${CNI_IMAGE_DIGEST}}
         INFINIBAND_CNI_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-infiniband-cni | jq --raw-output '.Digest')
         export SRIOV_INFINIBAND_CNI_IMAGE=${SRIOV_INFINIBAND_CNI_IMAGE:-quay.io/openshift/origin-sriov-infiniband-cni@${INFINIBAND_CNI_IMAGE_DIGEST}}
+        # OVS_CNI_IMAGE can be explicitly set to empty value, use default only if the var is not set
+        OVS_CNI_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/kubevirt/ovs-cni-plugin | jq --raw-output '.Digest')
+        export OVS_CNI_IMAGE=${OVS_CNI_IMAGE:-quay.io/kubevirt/ovs-cni-plugin@${OVS_CNI_IMAGE_DIGEST}}
+        # RDMA_CNI_IMAGE can be explicitly set to empty value, use default only if the var is not set
+        RDMA_CNI_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-rdma-cni | jq --raw-output '.Digest')
+        export RDMA_CNI_IMAGE=${RDMA_CNI_IMAGE-quay.io/openshift/origin-rdma-cni@${RDMA_CNI_IMAGE_DIGEST}}
         DP_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-network-device-plugin | jq --raw-output '.Digest')
         export SRIOV_DEVICE_PLUGIN_IMAGE=${SRIOV_DEVICE_PLUGIN_IMAGE:-quay.io/openshift/origin-sriov-network-device-plugin@${DP_IMAGE_DIGEST}}
         INJECTOR_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-dp-admission-controller | jq --raw-output '.Digest')
@@ -16,15 +24,25 @@ if [ -z $SKIP_VAR_SET ]; then
         export SRIOV_NETWORK_CONFIG_DAEMON_IMAGE=${SRIOV_NETWORK_CONFIG_DAEMON_IMAGE:-quay.io/openshift/origin-sriov-network-config-daemon@${DAEMON_IMAGE_DIGEST}}
         WEBHOOK_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-network-webhook | jq --raw-output '.Digest')
         export SRIOV_NETWORK_WEBHOOK_IMAGE=${SRIOV_NETWORK_WEBHOOK_IMAGE:-quay.io/openshift/origin-sriov-network-webhook@${WEBHOOK_IMAGE_DIGEST}}
+        METRICS_EXPORTER_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-network-metrics-exporter | jq --raw-output '.Digest')
+        export METRICS_EXPORTER_IMAGE=${METRICS_EXPORTER_IMAGE:-quay.io/openshift/origin-sriov-network-metrics-exporter@${METRICS_EXPORTER_IMAGE_DIGEST}}
         OPERATOR_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-sriov-network-operator | jq --raw-output '.Digest')
         export SRIOV_NETWORK_OPERATOR_IMAGE=${SRIOV_NETWORK_OPERATOR_IMAGE:-quay.io/openshift/origin-sriov-network-operator@${OPERATOR_IMAGE_DIGEST}}
+        METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE_DIGEST=$(skopeo inspect docker://quay.io/openshift/origin-kube-rbac-proxy | jq --raw-output '.Digest')
+        export METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE=${METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE:-quay.io/openshift/origin-kube-rbac-proxy@${METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE_DIGEST}}
 else
+        # ensure that OVS_CNI_IMAGE is set, empty string is a valid value
+        OVS_CNI_IMAGE=${OVS_CNI_IMAGE:-}
+        # ensure that RDMA_CNI_IMAGE is set, empty string is a valid value
+        RDMA_CNI_IMAGE=${RDMA_CNI_IMAGE:-}
+        METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE=${METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE:-}
         [ -z $SRIOV_CNI_IMAGE ] && echo "SRIOV_CNI_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $SRIOV_INFINIBAND_CNI_IMAGE ] && echo "SRIOV_INFINIBAND_CNI_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $SRIOV_DEVICE_PLUGIN_IMAGE ] && echo "SRIOV_DEVICE_PLUGIN_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $NETWORK_RESOURCES_INJECTOR_IMAGE ] && echo "NETWORK_RESOURCES_INJECTOR_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $SRIOV_NETWORK_CONFIG_DAEMON_IMAGE ] && echo "SRIOV_NETWORK_CONFIG_DAEMON_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $SRIOV_NETWORK_WEBHOOK_IMAGE ] && echo "SRIOV_NETWORK_WEBHOOK_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
+        [ -z $METRICS_EXPORTER_IMAGE ] && echo "METRICS_EXPORTER_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
         [ -z $SRIOV_NETWORK_OPERATOR_IMAGE ] && echo "SRIOV_NETWORK_OPERATOR_IMAGE is empty but SKIP_VAR_SET is set" && exit 1
 fi
 
@@ -42,3 +60,6 @@ export ADMISSION_CONTROLLERS_CERTIFICATES_CERT_MANAGER_ENABLED=${ADMISSION_CONTR
 export ADMISSION_CONTROLLERS_CERTIFICATES_OPERATOR_CA_CRT=${ADMISSION_CONTROLLERS_CERTIFICATES_OPERATOR_CA_CRT:-""}
 export ADMISSION_CONTROLLERS_CERTIFICATES_INJECTOR_CA_CRT=${ADMISSION_CONTROLLERS_CERTIFICATES_INJECTOR_CA_CRT:-""}
 export DEV_MODE=${DEV_MODE:-"FALSE"}
+export OPERATOR_LEADER_ELECTION_ENABLE=${OPERATOR_LEADER_ELECTION_ENABLE:-"false"}
+export METRICS_EXPORTER_SECRET_NAME=${METRICS_EXPORTER_SECRET_NAME:-"metrics-exporter-cert"}
+export METRICS_EXPORTER_PORT=${METRICS_EXPORTER_PORT:-"9110"}

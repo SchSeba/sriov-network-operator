@@ -3,9 +3,7 @@ package generic
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os/exec"
-	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,7 +16,6 @@ import (
 	plugin "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/plugins"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/utils"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
-	mlx "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vendors/mellanox"
 )
 
 var PluginName = "generic"
@@ -51,15 +48,14 @@ type DriverState struct {
 type DriverStateMapType map[uint]*DriverState
 
 type GenericPlugin struct {
-	PluginName          string
-	SpecVersion         string
-	DesireState         *sriovnetworkv1.SriovNetworkNodeState
-	LastState           *sriovnetworkv1.SriovNetworkNodeState
-	DriverStateMap      DriverStateMapType
-	DesiredKernelArgs   map[string]bool
-	pfsToSkip           map[string]bool
-	helpers             helper.HostHelpersInterface
-	skipVFConfiguration bool
+	PluginName              string
+	SpecVersion             string
+	DesireState             *sriovnetworkv1.SriovNetworkNodeState
+	DriverStateMap          DriverStateMapType
+	DesiredKernelArgs       map[string]bool
+	helpers                 helper.HostHelpersInterface
+	skipVFConfiguration     bool
+	skipBridgeConfiguration bool
 }
 
 type Option = func(c *genericPluginOptions)
@@ -73,8 +69,16 @@ func WithSkipVFConfiguration() Option {
 	}
 }
 
+// WithSkipBridgeConfiguration configures generic_plugin to skip configuration of the managed bridges
+func WithSkipBridgeConfiguration() Option {
+	return func(c *genericPluginOptions) {
+		c.skipBridgeConfiguration = true
+	}
+}
+
 type genericPluginOptions struct {
-	skipVFConfiguration bool
+	skipVFConfiguration     bool
+	skipBridgeConfiguration bool
 }
 
 const scriptsPath = "bindata/scripts/enable-kargs.sh"
@@ -108,13 +112,13 @@ func NewGenericPlugin(helpers helper.HostHelpersInterface, options ...Option) (p
 		DriverLoaded:   false,
 	}
 	return &GenericPlugin{
-		PluginName:          PluginName,
-		SpecVersion:         "1.0",
-		DriverStateMap:      driverStateMap,
-		DesiredKernelArgs:   make(map[string]bool),
-		pfsToSkip:           make(map[string]bool),
-		helpers:             helpers,
-		skipVFConfiguration: cfg.skipVFConfiguration,
+		PluginName:              PluginName,
+		SpecVersion:             "1.0",
+		DriverStateMap:          driverStateMap,
+		DesiredKernelArgs:       make(map[string]bool),
+		helpers:                 helpers,
+		skipVFConfiguration:     cfg.skipVFConfiguration,
+		skipBridgeConfiguration: cfg.skipBridgeConfiguration,
 	}, nil
 }
 
@@ -133,7 +137,7 @@ func (p *GenericPlugin) OnNodeStateChange(new *sriovnetworkv1.SriovNetworkNodeSt
 	log.Log.Info("generic plugin OnNodeStateChange()")
 	p.DesireState = new
 
-	needDrain = p.needDrainNode(new.Spec.Interfaces, new.Status.Interfaces)
+	needDrain = p.needDrainNode(new.Spec, new.Status)
 	needReboot, err = p.needRebootNode(new)
 	if err != nil {
 		return needDrain, needReboot, err
@@ -143,6 +147,49 @@ func (p *GenericPlugin) OnNodeStateChange(new *sriovnetworkv1.SriovNetworkNodeSt
 		needDrain = true
 	}
 	return
+}
+
+// CheckStatusChanges verify whether SriovNetworkNodeState CR status present changes on configured VFs.
+func (p *GenericPlugin) CheckStatusChanges(current *sriovnetworkv1.SriovNetworkNodeState) (bool, error) {
+	log.Log.Info("generic-plugin CheckStatusChanges()")
+
+	for _, iface := range current.Spec.Interfaces {
+		found := false
+		for _, ifaceStatus := range current.Status.Interfaces {
+			// TODO: remove the check for ExternallyManaged - https://github.com/k8snetworkplumbingwg/sriov-network-operator/issues/632
+			if iface.PciAddress == ifaceStatus.PciAddress && !iface.ExternallyManaged {
+				found = true
+				if sriovnetworkv1.NeedToUpdateSriov(&iface, &ifaceStatus) {
+					log.Log.Info("CheckStatusChanges(): status changed for interface", "address", iface.PciAddress)
+					return true, nil
+				}
+				break
+			}
+		}
+		if !found {
+			log.Log.Info("CheckStatusChanges(): no status found for interface", "address", iface.PciAddress)
+		}
+	}
+
+	if p.shouldConfigureBridges() {
+		if sriovnetworkv1.NeedToUpdateBridges(&current.Spec.Bridges, &current.Status.Bridges) {
+			log.Log.Info("CheckStatusChanges(): bridge configuration needs to be updated")
+			return true, nil
+		}
+	}
+
+	missingKernelArgs, err := p.getMissingKernelArgs()
+	if err != nil {
+		log.Log.Error(err, "generic-plugin CheckStatusChanges(): failed to verify missing kernel arguments")
+		return false, err
+	}
+
+	if len(missingKernelArgs) != 0 {
+		log.Log.V(0).Info("generic-plugin CheckStatusChanges(): kernel args missing",
+			"kernelArgs", missingKernelArgs)
+	}
+
+	return len(missingKernelArgs) != 0, nil
 }
 
 func (p *GenericPlugin) syncDriverState() error {
@@ -163,14 +210,6 @@ func (p *GenericPlugin) syncDriverState() error {
 func (p *GenericPlugin) Apply() error {
 	log.Log.Info("generic plugin Apply()", "desiredState", p.DesireState.Spec)
 
-	if p.LastState != nil {
-		log.Log.Info("generic plugin Apply()", "lastState", p.LastState.Spec)
-		if reflect.DeepEqual(p.LastState.Spec.Interfaces, p.DesireState.Spec.Interfaces) {
-			log.Log.Info("generic plugin Apply(): desired and latest state are the same, nothing to apply")
-			return nil
-		}
-	}
-
 	if err := p.syncDriverState(); err != nil {
 		return err
 	}
@@ -185,15 +224,20 @@ func (p *GenericPlugin) Apply() error {
 	}
 
 	if err := p.helpers.ConfigSriovInterfaces(p.helpers, p.DesireState.Spec.Interfaces,
-		p.DesireState.Status.Interfaces, p.pfsToSkip, p.skipVFConfiguration); err != nil {
+		p.DesireState.Status.Interfaces, p.skipVFConfiguration); err != nil {
 		// Catch the "cannot allocate memory" error and try to use PCI realloc
 		if errors.Is(err, syscall.ENOMEM) {
 			p.addToDesiredKernelArgs(consts.KernelArgPciRealloc)
 		}
 		return err
 	}
-	p.LastState = &sriovnetworkv1.SriovNetworkNodeState{}
-	*p.LastState = *p.DesireState
+
+	if p.shouldConfigureBridges() {
+		if err := p.helpers.ConfigureBridges(p.DesireState.Spec.Bridges, p.DesireState.Status.Bridges); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -256,62 +300,85 @@ func (p *GenericPlugin) addToDesiredKernelArgs(karg string) {
 	}
 }
 
-// syncDesiredKernelArgs Should be called to set all the kernel arguments. Returns bool if node update is needed.
-func (p *GenericPlugin) syncDesiredKernelArgs() (bool, error) {
-	needReboot := false
+// getMissingKernelArgs gets Kernel arguments that have not been set.
+func (p *GenericPlugin) getMissingKernelArgs() ([]string, error) {
+	missingArgs := make([]string, 0, len(p.DesiredKernelArgs))
 	if len(p.DesiredKernelArgs) == 0 {
-		return false, nil
+		return nil, nil
 	}
+
 	kargs, err := p.helpers.GetCurrentKernelArgs()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	for desiredKarg, attempted := range p.DesiredKernelArgs {
-		set := p.helpers.IsKernelArgsSet(kargs, desiredKarg)
-		if !set {
-			if attempted {
-				log.Log.V(2).Info("generic plugin syncDesiredKernelArgs(): previously attempted to set kernel arg",
-					"karg", desiredKarg)
-			}
-			// There is a case when we try to set the kernel argument here, the daemon could decide to not reboot because
-			// the daemon encountered a potentially one-time error. However we always want to make sure that the kernel
-			// argument is set once the daemon goes through node state sync again.
-			update, err := setKernelArg(desiredKarg)
-			if err != nil {
-				log.Log.Error(err, "generic plugin syncDesiredKernelArgs(): fail to set kernel arg", "karg", desiredKarg)
-				return false, err
-			}
-			if update {
-				needReboot = true
-				log.Log.V(2).Info("generic plugin syncDesiredKernelArgs(): need reboot for setting kernel arg", "karg", desiredKarg)
-			}
-			p.DesiredKernelArgs[desiredKarg] = true
+
+	for desiredKarg := range p.DesiredKernelArgs {
+		if !p.helpers.IsKernelArgsSet(kargs, desiredKarg) {
+			missingArgs = append(missingArgs, desiredKarg)
 		}
+	}
+	return missingArgs, nil
+}
+
+// syncDesiredKernelArgs should be called to set all the kernel arguments. Returns bool if node update is needed.
+func (p *GenericPlugin) syncDesiredKernelArgs(kargs []string) (bool, error) {
+	needReboot := false
+
+	for _, karg := range kargs {
+		if p.DesiredKernelArgs[karg] {
+			log.Log.V(2).Info("generic-plugin syncDesiredKernelArgs(): previously attempted to set kernel arg",
+				"karg", karg)
+		}
+		// There is a case when we try to set the kernel argument here, the daemon could decide to not reboot because
+		// the daemon encountered a potentially one-time error. However we always want to make sure that the kernel
+		// argument is set once the daemon goes through node state sync again.
+		update, err := setKernelArg(karg)
+		if err != nil {
+			log.Log.Error(err, "generic-plugin syncDesiredKernelArgs(): fail to set kernel arg", "karg", karg)
+			return false, err
+		}
+		if update {
+			needReboot = true
+			log.Log.V(2).Info("generic-plugin syncDesiredKernelArgs(): need reboot for setting kernel arg", "karg", karg)
+		}
+		p.DesiredKernelArgs[karg] = true
 	}
 	return needReboot, nil
 }
 
-func (p *GenericPlugin) needDrainNode(desired sriovnetworkv1.Interfaces, current sriovnetworkv1.InterfaceExts) (needDrain bool) {
+func (p *GenericPlugin) needDrainNode(desired sriovnetworkv1.SriovNetworkNodeStateSpec, current sriovnetworkv1.SriovNetworkNodeStateStatus) bool {
 	log.Log.V(2).Info("generic plugin needDrainNode()", "current", current, "desired", desired)
 
-	needDrain = false
-	for _, ifaceStatus := range current {
+	if p.needToUpdateVFs(desired, current) {
+		return true
+	}
+
+	if p.shouldConfigureBridges() {
+		if sriovnetworkv1.NeedToUpdateBridges(&desired.Bridges, &current.Bridges) {
+			log.Log.V(2).Info("generic plugin needDrainNode(): need drain since bridge configuration needs to be updated")
+			return true
+		}
+	}
+	return false
+}
+
+func (p *GenericPlugin) needToUpdateVFs(desired sriovnetworkv1.SriovNetworkNodeStateSpec, current sriovnetworkv1.SriovNetworkNodeStateStatus) bool {
+	for _, ifaceStatus := range current.Interfaces {
 		configured := false
-		for _, iface := range desired {
+		for _, iface := range desired.Interfaces {
 			if iface.PciAddress == ifaceStatus.PciAddress {
 				configured = true
 				if ifaceStatus.NumVfs == 0 {
-					log.Log.V(2).Info("generic plugin needDrainNode(): no need drain, for PCI address, current NumVfs is 0",
+					log.Log.V(2).Info("generic plugin needToUpdateVFs(): no need drain, for PCI address, current NumVfs is 0",
 						"address", iface.PciAddress)
 					break
 				}
 				if sriovnetworkv1.NeedToUpdateSriov(&iface, &ifaceStatus) {
-					log.Log.V(2).Info("generic plugin needDrainNode(): need drain, for PCI address request update",
+					log.Log.V(2).Info("generic plugin needToUpdateVFs(): need drain, for PCI address request update",
 						"address", iface.PciAddress)
-					needDrain = true
-					return
+					return true
 				}
-				log.Log.V(2).Info("generic plugin needDrainNode(): no need drain,for PCI address",
+				log.Log.V(2).Info("generic plugin needToUpdateVFs(): no need drain,for PCI address",
 					"address", iface.PciAddress, "expected-vfs", iface.NumVfs, "current-vfs", ifaceStatus.NumVfs)
 			}
 		}
@@ -319,32 +386,35 @@ func (p *GenericPlugin) needDrainNode(desired sriovnetworkv1.Interfaces, current
 			// load the PF info
 			pfStatus, exist, err := p.helpers.LoadPfsStatus(ifaceStatus.PciAddress)
 			if err != nil {
-				log.Log.Error(err, "generic plugin needDrainNode(): failed to load info about PF status for pci device",
+				log.Log.Error(err, "generic plugin needToUpdateVFs(): failed to load info about PF status for pci device",
 					"address", ifaceStatus.PciAddress)
 				continue
 			}
 
 			if !exist {
-				log.Log.Info("generic plugin needDrainNode(): PF name with pci address has VFs configured but they weren't created by the sriov operator. Skipping drain",
+				log.Log.Info("generic plugin needToUpdateVFs(): PF name with pci address has VFs configured but they weren't created by the sriov operator. Skipping drain",
 					"name", ifaceStatus.Name,
 					"address", ifaceStatus.PciAddress)
 				continue
 			}
 
 			if pfStatus.ExternallyManaged {
-				log.Log.Info("generic plugin needDrainNode()(): PF name with pci address was externally created. Skipping drain",
+				log.Log.Info("generic plugin needToUpdateVFs(): PF name with pci address was externally created. Skipping drain",
 					"name", ifaceStatus.Name,
 					"address", ifaceStatus.PciAddress)
 				continue
 			}
 
-			log.Log.V(2).Info("generic plugin needDrainNode(): need drain since interface needs to be reset",
+			log.Log.V(2).Info("generic plugin needToUpdateVFs(): need drain since interface needs to be reset",
 				"interface", ifaceStatus)
-			needDrain = true
-			return
+			return true
 		}
 	}
-	return
+	return false
+}
+
+func (p *GenericPlugin) shouldConfigureBridges() bool {
+	return vars.ManageSoftwareBridges && !p.skipBridgeConfiguration
 }
 
 func (p *GenericPlugin) addVfioDesiredKernelArg(state *sriovnetworkv1.SriovNetworkNodeState) {
@@ -355,87 +425,29 @@ func (p *GenericPlugin) addVfioDesiredKernelArg(state *sriovnetworkv1.SriovNetwo
 	}
 }
 
-func (p *GenericPlugin) needRebootNode(state *sriovnetworkv1.SriovNetworkNodeState) (needReboot bool, err error) {
-	needReboot = false
+func (p *GenericPlugin) needRebootNode(state *sriovnetworkv1.SriovNetworkNodeState) (bool, error) {
+	needReboot := false
+
 	p.addVfioDesiredKernelArg(state)
 
-	updateNode, err := p.syncDesiredKernelArgs()
+	missingKernelArgs, err := p.getMissingKernelArgs()
 	if err != nil {
-		log.Log.Error(err, "generic plugin needRebootNode(): failed to set the desired kernel arguments")
+		log.Log.Error(err, "generic-plugin needRebootNode(): failed to verify missing kernel arguments")
 		return false, err
-	}
-	if updateNode {
-		log.Log.V(2).Info("generic plugin needRebootNode(): need reboot for updating kernel arguments")
-		needReboot = true
 	}
 
-	// Create a map with all the PFs we will need to configure
-	// we need to create it here before we access the host file system using the chroot function
-	// because the skipConfigVf needs the mstconfig package that exist only inside the sriov-config-daemon file system
-	pfsToSkip, err := getPfsToSkip(p.DesireState, p.helpers)
-	if err != nil {
-		return false, err
-	}
-	p.pfsToSkip = pfsToSkip
-
-	updateNode, err = p.helpers.WriteSwitchdevConfFile(state, p.pfsToSkip)
-	if err != nil {
-		log.Log.Error(err, "generic plugin needRebootNode(): fail to write switchdev device config file")
-		return false, err
-	}
-	if updateNode {
-		log.Log.V(2).Info("generic plugin needRebootNode(): need reboot for updating switchdev device configuration")
-		needReboot = true
+	if len(missingKernelArgs) != 0 {
+		needReboot, err = p.syncDesiredKernelArgs(missingKernelArgs)
+		if err != nil {
+			log.Log.Error(err, "generic-plugin needRebootNode(): failed to set the desired kernel arguments")
+			return false, err
+		}
+		if needReboot {
+			log.Log.V(2).Info("generic-plugin needRebootNode(): need reboot for updating kernel arguments")
+		}
 	}
 
 	return needReboot, nil
-}
-
-// getPfsToSkip return a map of devices pci addresses to should be configured via systemd instead if the legacy mode
-// we skip devices in switchdev mode and Bluefield card in ConnectX mode
-func getPfsToSkip(ns *sriovnetworkv1.SriovNetworkNodeState, mlxHelper mlx.MellanoxInterface) (map[string]bool, error) {
-	pfsToSkip := map[string]bool{}
-	for _, ifaceStatus := range ns.Status.Interfaces {
-		for _, iface := range ns.Spec.Interfaces {
-			if iface.PciAddress == ifaceStatus.PciAddress {
-				skip, err := skipConfigVf(iface, ifaceStatus, mlxHelper)
-				if err != nil {
-					log.Log.Error(err, "GetPfsToSkip(): fail to check for skip VFs", "device", iface.PciAddress)
-					return pfsToSkip, err
-				}
-				pfsToSkip[iface.PciAddress] = skip
-				break
-			}
-		}
-	}
-
-	return pfsToSkip, nil
-}
-
-// skipConfigVf Use systemd service to configure switchdev mode or BF-2 NICs in OpenShift
-func skipConfigVf(ifSpec sriovnetworkv1.Interface, ifStatus sriovnetworkv1.InterfaceExt, mlxHelper mlx.MellanoxInterface) (bool, error) {
-	if ifSpec.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
-		log.Log.V(2).Info("skipConfigVf(): skip config VF for switchdev device")
-		return true, nil
-	}
-
-	//  NVIDIA BlueField 2 and BlueField3 in OpenShift
-	if vars.ClusterType == consts.ClusterTypeOpenshift && ifStatus.Vendor == mlx.VendorMellanox && (ifStatus.DeviceID == mlx.DeviceBF2 || ifStatus.DeviceID == mlx.DeviceBF3) {
-		// TODO: remove this when switch to the systemd configuration support.
-		mode, err := mlxHelper.GetMellanoxBlueFieldMode(ifStatus.PciAddress)
-		if err != nil {
-			return false, fmt.Errorf("failed to read Mellanox Bluefield card mode for %s,%v", ifStatus.PciAddress, err)
-		}
-
-		if mode == mlx.BluefieldConnectXMode {
-			return false, nil
-		}
-
-		log.Log.V(2).Info("skipConfigVf(): skip config VF for Bluefiled card on DPU mode")
-		return true, nil
-	}
-
-	return false, nil
 }
 
 // ////////////// for testing purposes only ///////////////////////

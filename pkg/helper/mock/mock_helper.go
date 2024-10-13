@@ -7,9 +7,7 @@ package mock_helper
 import (
 	reflect "reflect"
 
-	unit "github.com/coreos/go-systemd/v22/unit"
 	gomock "github.com/golang/mock/gomock"
-	ghw "github.com/jaypipes/ghw"
 	v1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	store "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/store"
 	types "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/types"
@@ -40,18 +38,32 @@ func (m *MockHostHelpersInterface) EXPECT() *MockHostHelpersInterfaceMockRecorde
 	return m.recorder
 }
 
-// AddUdevRule mocks base method.
-func (m *MockHostHelpersInterface) AddUdevRule(pfPciAddress string) error {
+// AddDisableNMUdevRule mocks base method.
+func (m *MockHostHelpersInterface) AddDisableNMUdevRule(pfPciAddress string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddUdevRule", pfPciAddress)
+	ret := m.ctrl.Call(m, "AddDisableNMUdevRule", pfPciAddress)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// AddUdevRule indicates an expected call of AddUdevRule.
-func (mr *MockHostHelpersInterfaceMockRecorder) AddUdevRule(pfPciAddress interface{}) *gomock.Call {
+// AddDisableNMUdevRule indicates an expected call of AddDisableNMUdevRule.
+func (mr *MockHostHelpersInterfaceMockRecorder) AddDisableNMUdevRule(pfPciAddress interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).AddUdevRule), pfPciAddress)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddDisableNMUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).AddDisableNMUdevRule), pfPciAddress)
+}
+
+// AddPersistPFNameUdevRule mocks base method.
+func (m *MockHostHelpersInterface) AddPersistPFNameUdevRule(pfPciAddress, pfName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddPersistPFNameUdevRule", pfPciAddress, pfName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AddPersistPFNameUdevRule indicates an expected call of AddPersistPFNameUdevRule.
+func (mr *MockHostHelpersInterfaceMockRecorder) AddPersistPFNameUdevRule(pfPciAddress, pfName interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddPersistPFNameUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).AddPersistPFNameUdevRule), pfPciAddress, pfName)
 }
 
 // AddVfRepresentorUdevRule mocks base method.
@@ -108,6 +120,21 @@ func (m *MockHostHelpersInterface) BindDriverByBusAndDevice(bus, device, driver 
 func (mr *MockHostHelpersInterfaceMockRecorder) BindDriverByBusAndDevice(bus, device, driver interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BindDriverByBusAndDevice", reflect.TypeOf((*MockHostHelpersInterface)(nil).BindDriverByBusAndDevice), bus, device, driver)
+}
+
+// CheckRDMAEnabled mocks base method.
+func (m *MockHostHelpersInterface) CheckRDMAEnabled() (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckRDMAEnabled")
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CheckRDMAEnabled indicates an expected call of CheckRDMAEnabled.
+func (mr *MockHostHelpersInterfaceMockRecorder) CheckRDMAEnabled() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckRDMAEnabled", reflect.TypeOf((*MockHostHelpersInterface)(nil).CheckRDMAEnabled))
 }
 
 // Chroot mocks base method.
@@ -169,17 +196,45 @@ func (mr *MockHostHelpersInterfaceMockRecorder) ConfigSriovDeviceVirtual(iface i
 }
 
 // ConfigSriovInterfaces mocks base method.
-func (m *MockHostHelpersInterface) ConfigSriovInterfaces(storeManager store.ManagerInterface, interfaces []v1.Interface, ifaceStatuses []v1.InterfaceExt, pfsToConfig map[string]bool, skipVFConfiguration bool) error {
+func (m *MockHostHelpersInterface) ConfigSriovInterfaces(storeManager store.ManagerInterface, interfaces []v1.Interface, ifaceStatuses []v1.InterfaceExt, skipVFConfiguration bool) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ConfigSriovInterfaces", storeManager, interfaces, ifaceStatuses, pfsToConfig, skipVFConfiguration)
+	ret := m.ctrl.Call(m, "ConfigSriovInterfaces", storeManager, interfaces, ifaceStatuses, skipVFConfiguration)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // ConfigSriovInterfaces indicates an expected call of ConfigSriovInterfaces.
-func (mr *MockHostHelpersInterfaceMockRecorder) ConfigSriovInterfaces(storeManager, interfaces, ifaceStatuses, pfsToConfig, skipVFConfiguration interface{}) *gomock.Call {
+func (mr *MockHostHelpersInterfaceMockRecorder) ConfigSriovInterfaces(storeManager, interfaces, ifaceStatuses, skipVFConfiguration interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConfigSriovInterfaces", reflect.TypeOf((*MockHostHelpersInterface)(nil).ConfigSriovInterfaces), storeManager, interfaces, ifaceStatuses, pfsToConfig, skipVFConfiguration)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConfigSriovInterfaces", reflect.TypeOf((*MockHostHelpersInterface)(nil).ConfigSriovInterfaces), storeManager, interfaces, ifaceStatuses, skipVFConfiguration)
+}
+
+// ConfigureBridges mocks base method.
+func (m *MockHostHelpersInterface) ConfigureBridges(bridgesSpec, bridgesStatus v1.Bridges) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ConfigureBridges", bridgesSpec, bridgesStatus)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ConfigureBridges indicates an expected call of ConfigureBridges.
+func (mr *MockHostHelpersInterfaceMockRecorder) ConfigureBridges(bridgesSpec, bridgesStatus interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConfigureBridges", reflect.TypeOf((*MockHostHelpersInterface)(nil).ConfigureBridges), bridgesSpec, bridgesStatus)
+}
+
+// ConfigureVfGUID mocks base method.
+func (m *MockHostHelpersInterface) ConfigureVfGUID(vfAddr, pfAddr string, vfID int, pfLink netlink.Link) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ConfigureVfGUID", vfAddr, pfAddr, vfID, pfLink)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ConfigureVfGUID indicates an expected call of ConfigureVfGUID.
+func (mr *MockHostHelpersInterfaceMockRecorder) ConfigureVfGUID(vfAddr, pfAddr, vfID, pfLink interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConfigureVfGUID", reflect.TypeOf((*MockHostHelpersInterface)(nil).ConfigureVfGUID), vfAddr, pfAddr, vfID, pfLink)
 }
 
 // CreateVDPADevice mocks base method.
@@ -208,6 +263,35 @@ func (m *MockHostHelpersInterface) DeleteVDPADevice(pciAddr string) error {
 func (mr *MockHostHelpersInterfaceMockRecorder) DeleteVDPADevice(pciAddr interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteVDPADevice", reflect.TypeOf((*MockHostHelpersInterface)(nil).DeleteVDPADevice), pciAddr)
+}
+
+// DetachInterfaceFromManagedBridge mocks base method.
+func (m *MockHostHelpersInterface) DetachInterfaceFromManagedBridge(pciAddr string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DetachInterfaceFromManagedBridge", pciAddr)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DetachInterfaceFromManagedBridge indicates an expected call of DetachInterfaceFromManagedBridge.
+func (mr *MockHostHelpersInterfaceMockRecorder) DetachInterfaceFromManagedBridge(pciAddr interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DetachInterfaceFromManagedBridge", reflect.TypeOf((*MockHostHelpersInterface)(nil).DetachInterfaceFromManagedBridge), pciAddr)
+}
+
+// DiscoverBridges mocks base method.
+func (m *MockHostHelpersInterface) DiscoverBridges() (v1.Bridges, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DiscoverBridges")
+	ret0, _ := ret[0].(v1.Bridges)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DiscoverBridges indicates an expected call of DiscoverBridges.
+func (mr *MockHostHelpersInterfaceMockRecorder) DiscoverBridges() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DiscoverBridges", reflect.TypeOf((*MockHostHelpersInterface)(nil).DiscoverBridges))
 }
 
 // DiscoverSriovDevices mocks base method.
@@ -251,36 +335,6 @@ func (m *MockHostHelpersInterface) EnableHwTcOffload(ifaceName string) error {
 func (mr *MockHostHelpersInterfaceMockRecorder) EnableHwTcOffload(ifaceName interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnableHwTcOffload", reflect.TypeOf((*MockHostHelpersInterface)(nil).EnableHwTcOffload), ifaceName)
-}
-
-// EnableRDMA mocks base method.
-func (m *MockHostHelpersInterface) EnableRDMA(conditionFilePath, serviceName, packageManager string) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "EnableRDMA", conditionFilePath, serviceName, packageManager)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// EnableRDMA indicates an expected call of EnableRDMA.
-func (mr *MockHostHelpersInterfaceMockRecorder) EnableRDMA(conditionFilePath, serviceName, packageManager interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnableRDMA", reflect.TypeOf((*MockHostHelpersInterface)(nil).EnableRDMA), conditionFilePath, serviceName, packageManager)
-}
-
-// EnableRDMAOnRHELMachine mocks base method.
-func (m *MockHostHelpersInterface) EnableRDMAOnRHELMachine() (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "EnableRDMAOnRHELMachine")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// EnableRDMAOnRHELMachine indicates an expected call of EnableRDMAOnRHELMachine.
-func (mr *MockHostHelpersInterfaceMockRecorder) EnableRDMAOnRHELMachine() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnableRDMAOnRHELMachine", reflect.TypeOf((*MockHostHelpersInterface)(nil).EnableRDMAOnRHELMachine))
 }
 
 // EnableService mocks base method.
@@ -357,6 +411,21 @@ func (mr *MockHostHelpersInterfaceMockRecorder) GetDriverByBusAndDevice(bus, dev
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDriverByBusAndDevice", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetDriverByBusAndDevice), bus, device)
 }
 
+// GetInterfaceIndex mocks base method.
+func (m *MockHostHelpersInterface) GetInterfaceIndex(pciAddr string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetInterfaceIndex", pciAddr)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetInterfaceIndex indicates an expected call of GetInterfaceIndex.
+func (mr *MockHostHelpersInterfaceMockRecorder) GetInterfaceIndex(pciAddr interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetInterfaceIndex", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetInterfaceIndex), pciAddr)
+}
+
 // GetLinkType mocks base method.
 func (m *MockHostHelpersInterface) GetLinkType(name string) string {
 	m.ctrl.T.Helper()
@@ -402,6 +471,20 @@ func (mr *MockHostHelpersInterfaceMockRecorder) GetMlxNicFwData(pciAddress inter
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMlxNicFwData", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetMlxNicFwData), pciAddress)
 }
 
+// GetNetDevLinkAdminState mocks base method.
+func (m *MockHostHelpersInterface) GetNetDevLinkAdminState(ifaceName string) string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetNetDevLinkAdminState", ifaceName)
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetNetDevLinkAdminState indicates an expected call of GetNetDevLinkAdminState.
+func (mr *MockHostHelpersInterfaceMockRecorder) GetNetDevLinkAdminState(ifaceName interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNetDevLinkAdminState", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetNetDevLinkAdminState), ifaceName)
+}
+
 // GetNetDevLinkSpeed mocks base method.
 func (m *MockHostHelpersInterface) GetNetDevLinkSpeed(name string) string {
 	m.ctrl.T.Helper()
@@ -428,6 +511,20 @@ func (m *MockHostHelpersInterface) GetNetDevMac(name string) string {
 func (mr *MockHostHelpersInterfaceMockRecorder) GetNetDevMac(name interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNetDevMac", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetNetDevMac), name)
+}
+
+// GetNetDevNodeGUID mocks base method.
+func (m *MockHostHelpersInterface) GetNetDevNodeGUID(pciAddr string) string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetNetDevNodeGUID", pciAddr)
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetNetDevNodeGUID indicates an expected call of GetNetDevNodeGUID.
+func (mr *MockHostHelpersInterfaceMockRecorder) GetNetDevNodeGUID(pciAddr interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNetDevNodeGUID", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetNetDevNodeGUID), pciAddr)
 }
 
 // GetNetdevMTU mocks base method.
@@ -458,19 +555,19 @@ func (mr *MockHostHelpersInterfaceMockRecorder) GetNicSriovMode(pciAddr interfac
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNicSriovMode", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetNicSriovMode), pciAddr)
 }
 
-// GetOSPrettyName mocks base method.
-func (m *MockHostHelpersInterface) GetOSPrettyName() (string, error) {
+// GetPciAddressFromInterfaceName mocks base method.
+func (m *MockHostHelpersInterface) GetPciAddressFromInterfaceName(interfaceName string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetOSPrettyName")
+	ret := m.ctrl.Call(m, "GetPciAddressFromInterfaceName", interfaceName)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetOSPrettyName indicates an expected call of GetOSPrettyName.
-func (mr *MockHostHelpersInterfaceMockRecorder) GetOSPrettyName() *gomock.Call {
+// GetPciAddressFromInterfaceName indicates an expected call of GetPciAddressFromInterfaceName.
+func (mr *MockHostHelpersInterfaceMockRecorder) GetPciAddressFromInterfaceName(interfaceName interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOSPrettyName", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetOSPrettyName))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPciAddressFromInterfaceName", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetPciAddressFromInterfaceName), interfaceName)
 }
 
 // GetPhysPortName mocks base method.
@@ -503,20 +600,6 @@ func (mr *MockHostHelpersInterfaceMockRecorder) GetPhysSwitchID(name interface{}
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPhysSwitchID", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetPhysSwitchID), name)
 }
 
-// GetVfInfo mocks base method.
-func (m *MockHostHelpersInterface) GetVfInfo(pciAddr string, devices []*ghw.PCIDevice) v1.VirtualFunction {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetVfInfo", pciAddr, devices)
-	ret0, _ := ret[0].(v1.VirtualFunction)
-	return ret0
-}
-
-// GetVfInfo indicates an expected call of GetVfInfo.
-func (mr *MockHostHelpersInterfaceMockRecorder) GetVfInfo(pciAddr, devices interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetVfInfo", reflect.TypeOf((*MockHostHelpersInterface)(nil).GetVfInfo), pciAddr, devices)
-}
-
 // HasDriver mocks base method.
 func (m *MockHostHelpersInterface) HasDriver(pciAddr string) (bool, string) {
 	m.ctrl.T.Helper()
@@ -530,35 +613,6 @@ func (m *MockHostHelpersInterface) HasDriver(pciAddr string) (bool, string) {
 func (mr *MockHostHelpersInterfaceMockRecorder) HasDriver(pciAddr interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasDriver", reflect.TypeOf((*MockHostHelpersInterface)(nil).HasDriver), pciAddr)
-}
-
-// InstallRDMA mocks base method.
-func (m *MockHostHelpersInterface) InstallRDMA(packageManager string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "InstallRDMA", packageManager)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// InstallRDMA indicates an expected call of InstallRDMA.
-func (mr *MockHostHelpersInterfaceMockRecorder) InstallRDMA(packageManager interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallRDMA", reflect.TypeOf((*MockHostHelpersInterface)(nil).InstallRDMA), packageManager)
-}
-
-// IsCoreOS mocks base method.
-func (m *MockHostHelpersInterface) IsCoreOS() (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsCoreOS")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsCoreOS indicates an expected call of IsCoreOS.
-func (mr *MockHostHelpersInterfaceMockRecorder) IsCoreOS() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsCoreOS", reflect.TypeOf((*MockHostHelpersInterface)(nil).IsCoreOS))
 }
 
 // IsKernelArgsSet mocks base method.
@@ -602,21 +656,6 @@ func (m *MockHostHelpersInterface) IsKernelModuleLoaded(name string) (bool, erro
 func (mr *MockHostHelpersInterfaceMockRecorder) IsKernelModuleLoaded(name interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsKernelModuleLoaded", reflect.TypeOf((*MockHostHelpersInterface)(nil).IsKernelModuleLoaded), name)
-}
-
-// IsRHELSystem mocks base method.
-func (m *MockHostHelpersInterface) IsRHELSystem() (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsRHELSystem")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsRHELSystem indicates an expected call of IsRHELSystem.
-func (mr *MockHostHelpersInterfaceMockRecorder) IsRHELSystem() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsRHELSystem", reflect.TypeOf((*MockHostHelpersInterface)(nil).IsRHELSystem))
 }
 
 // IsServiceEnabled mocks base method.
@@ -663,21 +702,6 @@ func (mr *MockHostHelpersInterfaceMockRecorder) IsSwitchdev(name interface{}) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsSwitchdev", reflect.TypeOf((*MockHostHelpersInterface)(nil).IsSwitchdev), name)
 }
 
-// IsUbuntuSystem mocks base method.
-func (m *MockHostHelpersInterface) IsUbuntuSystem() (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsUbuntuSystem")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsUbuntuSystem indicates an expected call of IsUbuntuSystem.
-func (mr *MockHostHelpersInterfaceMockRecorder) IsUbuntuSystem() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsUbuntuSystem", reflect.TypeOf((*MockHostHelpersInterface)(nil).IsUbuntuSystem))
-}
-
 // LoadKernelModule mocks base method.
 func (m *MockHostHelpersInterface) LoadKernelModule(name string, args ...string) error {
 	m.ctrl.T.Helper()
@@ -713,6 +737,20 @@ func (mr *MockHostHelpersInterfaceMockRecorder) LoadPfsStatus(pciAddress interfa
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPfsStatus", reflect.TypeOf((*MockHostHelpersInterface)(nil).LoadPfsStatus), pciAddress)
 }
 
+// LoadUdevRules mocks base method.
+func (m *MockHostHelpersInterface) LoadUdevRules() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoadUdevRules")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// LoadUdevRules indicates an expected call of LoadUdevRules.
+func (mr *MockHostHelpersInterfaceMockRecorder) LoadUdevRules() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadUdevRules", reflect.TypeOf((*MockHostHelpersInterface)(nil).LoadUdevRules))
+}
+
 // MlxConfigFW mocks base method.
 func (m *MockHostHelpersInterface) MlxConfigFW(attributesToChange map[string]mlxutils.MlxNic) error {
 	m.ctrl.T.Helper()
@@ -725,6 +763,20 @@ func (m *MockHostHelpersInterface) MlxConfigFW(attributesToChange map[string]mlx
 func (mr *MockHostHelpersInterfaceMockRecorder) MlxConfigFW(attributesToChange interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MlxConfigFW", reflect.TypeOf((*MockHostHelpersInterface)(nil).MlxConfigFW), attributesToChange)
+}
+
+// MlxResetFW mocks base method.
+func (m *MockHostHelpersInterface) MlxResetFW(pciAddresses []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MlxResetFW", pciAddresses)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MlxResetFW indicates an expected call of MlxResetFW.
+func (mr *MockHostHelpersInterfaceMockRecorder) MlxResetFW(pciAddresses interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MlxResetFW", reflect.TypeOf((*MockHostHelpersInterface)(nil).MlxResetFW), pciAddresses)
 }
 
 // MstConfigReadData mocks base method.
@@ -757,34 +809,18 @@ func (mr *MockHostHelpersInterfaceMockRecorder) PrepareNMUdevRule(supportedVfIds
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PrepareNMUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).PrepareNMUdevRule), supportedVfIds)
 }
 
-// RdmaIsLoaded mocks base method.
-func (m *MockHostHelpersInterface) RdmaIsLoaded() (bool, error) {
+// PrepareVFRepUdevRule mocks base method.
+func (m *MockHostHelpersInterface) PrepareVFRepUdevRule() error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RdmaIsLoaded")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret := m.ctrl.Call(m, "PrepareVFRepUdevRule")
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
-// RdmaIsLoaded indicates an expected call of RdmaIsLoaded.
-func (mr *MockHostHelpersInterfaceMockRecorder) RdmaIsLoaded() *gomock.Call {
+// PrepareVFRepUdevRule indicates an expected call of PrepareVFRepUdevRule.
+func (mr *MockHostHelpersInterfaceMockRecorder) PrepareVFRepUdevRule() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RdmaIsLoaded", reflect.TypeOf((*MockHostHelpersInterface)(nil).RdmaIsLoaded))
-}
-
-// ReadScriptManifestFile mocks base method.
-func (m *MockHostHelpersInterface) ReadScriptManifestFile(path string) (*types.ScriptManifestFile, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReadScriptManifestFile", path)
-	ret0, _ := ret[0].(*types.ScriptManifestFile)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ReadScriptManifestFile indicates an expected call of ReadScriptManifestFile.
-func (mr *MockHostHelpersInterfaceMockRecorder) ReadScriptManifestFile(path interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadScriptManifestFile", reflect.TypeOf((*MockHostHelpersInterface)(nil).ReadScriptManifestFile), path)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PrepareVFRepUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).PrepareVFRepUdevRule))
 }
 
 // ReadService mocks base method.
@@ -846,52 +882,46 @@ func (mr *MockHostHelpersInterfaceMockRecorder) RebindVfToDefaultDriver(pciAddr 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RebindVfToDefaultDriver", reflect.TypeOf((*MockHostHelpersInterface)(nil).RebindVfToDefaultDriver), pciAddr)
 }
 
-// ReloadDriver mocks base method.
-func (m *MockHostHelpersInterface) ReloadDriver(driver string) error {
+// RemoveDisableNMUdevRule mocks base method.
+func (m *MockHostHelpersInterface) RemoveDisableNMUdevRule(pfPciAddress string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReloadDriver", driver)
+	ret := m.ctrl.Call(m, "RemoveDisableNMUdevRule", pfPciAddress)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// ReloadDriver indicates an expected call of ReloadDriver.
-func (mr *MockHostHelpersInterfaceMockRecorder) ReloadDriver(driver interface{}) *gomock.Call {
+// RemoveDisableNMUdevRule indicates an expected call of RemoveDisableNMUdevRule.
+func (mr *MockHostHelpersInterfaceMockRecorder) RemoveDisableNMUdevRule(pfPciAddress interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReloadDriver", reflect.TypeOf((*MockHostHelpersInterface)(nil).ReloadDriver), driver)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveDisableNMUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).RemoveDisableNMUdevRule), pfPciAddress)
 }
 
-// RemoveFromService mocks base method.
-func (m *MockHostHelpersInterface) RemoveFromService(service *types.Service, options ...*unit.UnitOption) (*types.Service, error) {
+// RemovePersistPFNameUdevRule mocks base method.
+func (m *MockHostHelpersInterface) RemovePersistPFNameUdevRule(pfPciAddress string) error {
 	m.ctrl.T.Helper()
-	varargs := []interface{}{service}
-	for _, a := range options {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "RemoveFromService", varargs...)
-	ret0, _ := ret[0].(*types.Service)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// RemoveFromService indicates an expected call of RemoveFromService.
-func (mr *MockHostHelpersInterfaceMockRecorder) RemoveFromService(service interface{}, options ...interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]interface{}{service}, options...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveFromService", reflect.TypeOf((*MockHostHelpersInterface)(nil).RemoveFromService), varargs...)
-}
-
-// RemoveUdevRule mocks base method.
-func (m *MockHostHelpersInterface) RemoveUdevRule(pfPciAddress string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RemoveUdevRule", pfPciAddress)
+	ret := m.ctrl.Call(m, "RemovePersistPFNameUdevRule", pfPciAddress)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// RemoveUdevRule indicates an expected call of RemoveUdevRule.
-func (mr *MockHostHelpersInterfaceMockRecorder) RemoveUdevRule(pfPciAddress interface{}) *gomock.Call {
+// RemovePersistPFNameUdevRule indicates an expected call of RemovePersistPFNameUdevRule.
+func (mr *MockHostHelpersInterfaceMockRecorder) RemovePersistPFNameUdevRule(pfPciAddress interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).RemoveUdevRule), pfPciAddress)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemovePersistPFNameUdevRule", reflect.TypeOf((*MockHostHelpersInterface)(nil).RemovePersistPFNameUdevRule), pfPciAddress)
+}
+
+// RemovePfAppliedStatus mocks base method.
+func (m *MockHostHelpersInterface) RemovePfAppliedStatus(pciAddress string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemovePfAppliedStatus", pciAddress)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemovePfAppliedStatus indicates an expected call of RemovePfAppliedStatus.
+func (mr *MockHostHelpersInterfaceMockRecorder) RemovePfAppliedStatus(pciAddress interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemovePfAppliedStatus", reflect.TypeOf((*MockHostHelpersInterface)(nil).RemovePfAppliedStatus), pciAddress)
 }
 
 // RemoveVfRepresentorUdevRule mocks base method.
@@ -1025,49 +1055,6 @@ func (m *MockHostHelpersInterface) SetVfAdminMac(vfAddr string, pfLink, vfLink n
 func (mr *MockHostHelpersInterfaceMockRecorder) SetVfAdminMac(vfAddr, pfLink, vfLink interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetVfAdminMac", reflect.TypeOf((*MockHostHelpersInterface)(nil).SetVfAdminMac), vfAddr, pfLink, vfLink)
-}
-
-// SetVfGUID mocks base method.
-func (m *MockHostHelpersInterface) SetVfGUID(vfAddr string, pfLink netlink.Link) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetVfGUID", vfAddr, pfLink)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetVfGUID indicates an expected call of SetVfGUID.
-func (mr *MockHostHelpersInterfaceMockRecorder) SetVfGUID(vfAddr, pfLink interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetVfGUID", reflect.TypeOf((*MockHostHelpersInterface)(nil).SetVfGUID), vfAddr, pfLink)
-}
-
-// TriggerUdevEvent mocks base method.
-func (m *MockHostHelpersInterface) TriggerUdevEvent() error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "TriggerUdevEvent")
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// TriggerUdevEvent indicates an expected call of TriggerUdevEvent.
-func (mr *MockHostHelpersInterfaceMockRecorder) TriggerUdevEvent() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TriggerUdevEvent", reflect.TypeOf((*MockHostHelpersInterface)(nil).TriggerUdevEvent))
-}
-
-// TryEnableRdma mocks base method.
-func (m *MockHostHelpersInterface) TryEnableRdma() (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "TryEnableRdma")
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// TryEnableRdma indicates an expected call of TryEnableRdma.
-func (mr *MockHostHelpersInterfaceMockRecorder) TryEnableRdma() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TryEnableRdma", reflect.TypeOf((*MockHostHelpersInterface)(nil).TryEnableRdma))
 }
 
 // TryEnableTun mocks base method.
@@ -1205,19 +1192,4 @@ func (m *MockHostHelpersInterface) WriteCheckpointFile(arg0 *v1.SriovNetworkNode
 func (mr *MockHostHelpersInterfaceMockRecorder) WriteCheckpointFile(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WriteCheckpointFile", reflect.TypeOf((*MockHostHelpersInterface)(nil).WriteCheckpointFile), arg0)
-}
-
-// WriteSwitchdevConfFile mocks base method.
-func (m *MockHostHelpersInterface) WriteSwitchdevConfFile(newState *v1.SriovNetworkNodeState, pfsToSkip map[string]bool) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "WriteSwitchdevConfFile", newState, pfsToSkip)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// WriteSwitchdevConfFile indicates an expected call of WriteSwitchdevConfFile.
-func (mr *MockHostHelpersInterfaceMockRecorder) WriteSwitchdevConfFile(newState, pfsToSkip interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WriteSwitchdevConfFile", reflect.TypeOf((*MockHostHelpersInterface)(nil).WriteSwitchdevConfFile), newState, pfsToSkip)
 }

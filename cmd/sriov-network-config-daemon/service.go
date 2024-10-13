@@ -92,6 +92,8 @@ func runServiceCmd(cmd *cobra.Command, args []string) error {
 	}
 	setupLog.V(2).Info("sriov-config-service", "config", sriovConf)
 	vars.DevMode = sriovConf.UnsupportedNics
+	vars.ManageSoftwareBridges = sriovConf.ManageSoftwareBridges
+	vars.OVSDBSocketPath = sriovConf.OVSDBSocketPath
 
 	if err := initSupportedNics(); err != nil {
 		return updateSriovResultErr(setupLog, phaseArg, fmt.Errorf("failed to initialize list of supported NIC ids: %v", err))
@@ -145,9 +147,9 @@ func phasePre(setupLog logr.Logger, conf *systemd.SriovConfig, hostHelpers helpe
 		return fmt.Errorf("failed to remove sriov result file: %v", err)
 	}
 
-	_, err := hostHelpers.TryEnableRdma()
+	_, err := hostHelpers.CheckRDMAEnabled()
 	if err != nil {
-		setupLog.Error(err, "warning, failed to enable RDMA")
+		setupLog.Error(err, "warning, failed to check RDMA state")
 	}
 	hostHelpers.TryEnableTun()
 	hostHelpers.TryEnableVhostNet()
@@ -180,9 +182,9 @@ func callPlugin(setupLog logr.Logger, phase string, conf *systemd.SriovConfig, h
 		return nil
 	}
 
-	nodeState, err := getNetworkNodeState(setupLog, conf, hostHelpers)
+	nodeState, err := getNetworkNodeState(setupLog, conf, phase, hostHelpers)
 	if err != nil {
-		return nil
+		return err
 	}
 	_, _, err = configPlugin.OnNodeStateChange(nodeState)
 	if err != nil {
@@ -206,7 +208,9 @@ func getPlugin(setupLog logr.Logger, phase string,
 	case consts.Baremetal:
 		switch phase {
 		case PhasePre:
-			configPlugin, err = newGenericPluginFunc(hostHelpers, generic.WithSkipVFConfiguration())
+			configPlugin, err = newGenericPluginFunc(hostHelpers,
+				generic.WithSkipVFConfiguration(),
+				generic.WithSkipBridgeConfiguration())
 		case PhasePost:
 			configPlugin, err = newGenericPluginFunc(hostHelpers)
 		}
@@ -228,10 +232,11 @@ func getPlugin(setupLog logr.Logger, phase string,
 	return configPlugin, nil
 }
 
-func getNetworkNodeState(setupLog logr.Logger, conf *systemd.SriovConfig,
+func getNetworkNodeState(setupLog logr.Logger, conf *systemd.SriovConfig, phase string,
 	hostHelpers helper.HostHelpersInterface) (*sriovv1.SriovNetworkNodeState, error) {
 	var (
 		ifaceStatuses []sriovv1.InterfaceExt
+		bridges       sriovv1.Bridges
 		err           error
 	)
 	switch conf.PlatformType {
@@ -239,6 +244,13 @@ func getNetworkNodeState(setupLog logr.Logger, conf *systemd.SriovConfig,
 		ifaceStatuses, err = hostHelpers.DiscoverSriovDevices(hostHelpers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to discover sriov devices on the host:  %v", err)
+		}
+		if phase != PhasePre && vars.ManageSoftwareBridges {
+			// openvswitch is not available during the pre phase
+			bridges, err = hostHelpers.DiscoverBridges()
+			if err != nil {
+				return nil, fmt.Errorf("failed to discover managed bridges on the host:  %v", err)
+			}
 		}
 	case consts.VirtualOpenStack:
 		platformHelper, err := newPlatformHelperFunc()
@@ -256,7 +268,7 @@ func getNetworkNodeState(setupLog logr.Logger, conf *systemd.SriovConfig,
 	}
 	return &sriovv1.SriovNetworkNodeState{
 		Spec:   conf.Spec,
-		Status: sriovv1.SriovNetworkNodeStateStatus{Interfaces: ifaceStatuses},
+		Status: sriovv1.SriovNetworkNodeStateStatus{Interfaces: ifaceStatuses, Bridges: bridges},
 	}, nil
 }
 

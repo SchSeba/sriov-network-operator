@@ -96,10 +96,6 @@ func validateSriovNetworkPoolConfig(cr *sriovnetworkv1.SriovNetworkPoolConfig, o
 	log.Log.V(2).Info("validateSriovNetworkPoolConfig", "object", cr)
 	var warnings []string
 
-	if cr.GetName() == consts.DefaultConfigName && operation == v1.Delete {
-		return false, warnings, fmt.Errorf("default SriovOperatorConfig shouldn't be deleted")
-	}
-
 	if (cr.Spec.MaxUnavailable != nil || cr.Spec.NodeSelector != nil) && cr.Spec.OvsHardwareOffloadConfig.Name != "" {
 		return false, warnings, fmt.Errorf("SriovOperatorConfig can't have both parallel configuration and OvsHardwareOffloadConfig")
 	}
@@ -213,8 +209,10 @@ func staticValidateSriovNetworkNodePolicy(cr *sriovnetworkv1.SriovNetworkNodePol
 	if cr.Spec.DeviceType == consts.DeviceTypeVfioPci && cr.Spec.IsRdma {
 		return false, fmt.Errorf("'deviceType: vfio-pci' conflicts with 'isRdma: true'; Set 'deviceType' to (string)'netdevice' Or Set 'isRdma' to (bool)'false'")
 	}
-	if strings.EqualFold(cr.Spec.LinkType, consts.LinkTypeIB) && !cr.Spec.IsRdma {
-		return false, fmt.Errorf("'linkType: ib or IB' requires 'isRdma: true'; Set 'isRdma' to (bool)'true'")
+
+	// switchdev mode can be used only with ethernet links
+	if cr.Spec.LinkType != "" && !strings.EqualFold(cr.Spec.LinkType, consts.LinkTypeETH) && cr.Spec.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
+		return false, fmt.Errorf("'eSwitchMode: switchdev' can be used only with ethernet links")
 	}
 
 	// vdpa: deviceType must be set to 'netdevice'
@@ -225,13 +223,14 @@ func staticValidateSriovNetworkNodePolicy(cr *sriovnetworkv1.SriovNetworkNodePol
 	if (cr.Spec.VdpaType == consts.VdpaTypeVirtio || cr.Spec.VdpaType == consts.VdpaTypeVhost) && cr.Spec.EswitchMode != sriovnetworkv1.ESwithModeSwitchDev {
 		return false, fmt.Errorf("vdpa requires the device to be configured in switchdev mode")
 	}
-
-	// Externally created: we don't support  ExternallyManaged + EswitchMode
-	//TODO: if needed we will need to add this in the future as today EswitchMode is for HWOFFLOAD
-	if cr.Spec.ExternallyManaged && cr.Spec.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
-		return false, fmt.Errorf("ExternallyManaged doesn't support the device to be configured in switchdev mode")
+	// software bridge management: device must be configured in switchdev mode
+	if !cr.Spec.Bridge.IsEmpty() && cr.Spec.EswitchMode != sriovnetworkv1.ESwithModeSwitchDev {
+		return false, fmt.Errorf("software bridge management requires the device to be configured in switchdev mode")
 	}
-
+	// software bridge management: device can't be externally managed
+	if !cr.Spec.Bridge.IsEmpty() && cr.Spec.ExternallyManaged {
+		return false, fmt.Errorf("software bridge management can't be used when the device externally managed")
+	}
 	return true, nil
 }
 
@@ -367,6 +366,11 @@ func validatePolicyForNodePolicy(current *sriovnetworkv1.SriovNetworkNodePolicy,
 		return err
 	}
 
+	err = validateRootDevices(current, previous)
+	if err != nil {
+		return err
+	}
+
 	err = validateExludeTopologyField(current, previous)
 	if err != nil {
 		return err
@@ -377,28 +381,18 @@ func validatePolicyForNodePolicy(current *sriovnetworkv1.SriovNetworkNodePolicy,
 
 func validatePfNames(current *sriovnetworkv1.SriovNetworkNodePolicy, previous *sriovnetworkv1.SriovNetworkNodePolicy) error {
 	for _, curPf := range current.Spec.NicSelector.PfNames {
-		curName, curRngSt, curRngEnd, err := sriovnetworkv1.ParsePFName(curPf)
+		curName, curRngSt, curRngEnd, err := sriovnetworkv1.ParseVfRange(curPf)
 		if err != nil {
 			return fmt.Errorf("invalid PF name: %s", curPf)
 		}
 		for _, prePf := range previous.Spec.NicSelector.PfNames {
-			// Not validate return err of ParsePFName for previous PF
+			// Not validate return err for previous PF
 			// since it should already be evaluated in previous run.
-			preName, preRngSt, preRngEnd, _ := sriovnetworkv1.ParsePFName(prePf)
+			preName, preRngSt, preRngEnd, _ := sriovnetworkv1.ParseVfRange(prePf)
 			if curName == preName {
-				// reject policy with externallyManage if there is a policy on the same PF without it
-				if current.Spec.ExternallyManaged != previous.Spec.ExternallyManaged {
-					return fmt.Errorf("externallyManage is inconsistent with existing policy %s", previous.GetName())
-				}
-
-				// reject policy with externallyManage if there is a policy on the same PF with switch dev
-				if current.Spec.ExternallyManaged && previous.Spec.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
-					return fmt.Errorf("externallyManage overlap with switchdev mode in existing policy %s", previous.GetName())
-				}
-
-				// reject policy with externallyManage if there is a policy on the same PF with switch dev
-				if previous.Spec.ExternallyManaged && current.Spec.EswitchMode == sriovnetworkv1.ESwithModeSwitchDev {
-					return fmt.Errorf("switchdev overlap with externallyManage mode in existing policy %s", previous.GetName())
+				err = validateExternallyManage(current, previous)
+				if err != nil {
+					return err
 				}
 
 				// Check for overlapping ranges
@@ -410,6 +404,27 @@ func validatePfNames(current *sriovnetworkv1.SriovNetworkNodePolicy, previous *s
 			}
 		}
 	}
+	return nil
+}
+
+func validateRootDevices(current *sriovnetworkv1.SriovNetworkNodePolicy, previous *sriovnetworkv1.SriovNetworkNodePolicy) error {
+	for _, curRootDevice := range current.Spec.NicSelector.RootDevices {
+		for _, preRootDevice := range previous.Spec.NicSelector.RootDevices {
+			// TODO: (SchSeba) implement range for root devices
+			if curRootDevice == preRootDevice {
+				return fmt.Errorf("root device %s is overlapped with existing policy %s", curRootDevice, previous.GetName())
+			}
+		}
+	}
+	return nil
+}
+
+func validateExternallyManage(current, previous *sriovnetworkv1.SriovNetworkNodePolicy) error {
+	// reject policy with externallyManage if there is a policy on the same PF without it
+	if current.Spec.ExternallyManaged != previous.Spec.ExternallyManaged {
+		return fmt.Errorf("externallyManage is inconsistent with existing policy %s", previous.GetName())
+	}
+
 	return nil
 }
 

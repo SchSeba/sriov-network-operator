@@ -27,7 +27,8 @@ WEBHOOK_IMAGE_TAG?=$(IMAGE_REPO)/$(APP_NAME)-webhook:latest
 MAIN_PKG=cmd/manager/main.go
 export NAMESPACE?=openshift-sriov-network-operator
 export WATCH_NAMESPACE?=openshift-sriov-network-operator
-export GOFLAGS+=-mod=vendor
+export HOME?=$(PWD)
+export GOPATH?=$(shell go env GOPATH)
 export GO111MODULE=on
 PKGS=$(shell go list ./... | grep -v -E '/vendor/|/test|/examples')
 TESTPKGS?=./...
@@ -113,7 +114,13 @@ uninstall: manifests kustomize
 # Generate manifests e.g. CRD, RBAC etc.
 manifests: controller-gen
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./..." output:crd:artifacts:config=$(CRD_BASES)
-	cp ./config/crd/bases/* ./deployment/sriov-network-operator/crds/
+	cp ./config/crd/bases/* ./deployment/sriov-network-operator-chart/crds/
+
+check-manifests: manifests
+	@set +e; git diff --quiet config; \
+	if [ $$? -eq 1 ]; \
+	then echo -e "\n`config` folder is out of date. Please run `make manifests` and commit your changes"; \
+	exit 1; fi
 
 sync-manifests-%: manifests
 	@mkdir -p manifests/$*
@@ -122,6 +129,7 @@ sync-manifests-%: manifests
 	sed '2{/---/d}' $(CRD_BASES)/sriovnetwork.openshift.io_sriovnetworknodestates.yaml | awk 'NF' > manifests/$*/sriov-network-operator-sriovnetworknodestate.crd.yaml
 	sed '2{/---/d}' $(CRD_BASES)/sriovnetwork.openshift.io_sriovoperatorconfigs.yaml | awk 'NF' > manifests/$*/sriov-network-operator-sriovoperatorconfig.crd.yaml
 	sed '2{/---/d}' $(CRD_BASES)/sriovnetwork.openshift.io_sriovnetworks.yaml | awk 'NF' > manifests/$*/sriov-network-operator-sriovnetwork.crd.yaml
+	sed '2{/---/d}' $(CRD_BASES)/sriovnetwork.openshift.io_ovsnetworks.yaml | awk 'NF' > manifests/$*/sriov-network-operator-ovsnetwork.yaml
 	@echo ""
 	@echo "*************************************************************************************************************************************************"
 	@echo "* Please manually update the sriov-network-operator.v4.7.0.clusterserviceversion.yaml and image-references files in the manifests/$* directory *"
@@ -147,7 +155,7 @@ mock-generate: gomock
 
 CONTROLLER_GEN = $(BIN_DIR)/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.9.0)
+	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0)
 
 KUSTOMIZE = $(BIN_DIR)/kustomize
 kustomize: ## Download kustomize locally if necessary.
@@ -161,12 +169,16 @@ GOMOCK = $(shell pwd)/bin/mockgen
 gomock:
 	$(call go-install-tool,$(GOMOCK),github.com/golang/mock/mockgen@v1.6.0)
 
+GINKGO = $(BIN_DIR)/ginkgo
+ginkgo:
+	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo)
+
 # go-install-tool will 'go install' any package $2 and install it to $1.
 define go-install-tool
 @[ -f $(1) ] || { \
 set -e ;\
 echo "Downloading $(2)" ;\
-GOBIN=$(BIN_DIR) go install -mod=mod $(2) ;\
+GOBIN=$(BIN_DIR) GOFLAGS="" go install $(2) ;\
 }
 endef
 
@@ -175,6 +187,12 @@ skopeo:
 
 fakechroot:
 	if ! which fakechroot; then if [ -f /etc/redhat-release ]; then dnf -y install fakechroot; elif [ -f /etc/lsb-release ]; then sudo apt-get -y update; sudo apt-get -y install fakechroot; fi; fi
+
+$(BIN_DIR)/helm helm:
+	mkdir -p $(BIN_DIR)
+	curl -fsSL -o $(BIN_DIR)/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+	chmod 700 $(BIN_DIR)/get_helm.sh
+	HELM_INSTALL_DIR=$(BIN_DIR) $(BIN_DIR)/get_helm.sh
 
 deploy-setup: export ADMISSION_CONTROLLERS_ENABLED?=false
 deploy-setup: skopeo install
@@ -186,26 +204,26 @@ deploy-setup-k8s: export OPERATOR_EXEC=kubectl
 deploy-setup-k8s: export CLUSTER_TYPE=kubernetes
 deploy-setup-k8s: deploy-setup
 
-test-e2e-conformance:
+test-e2e-conformance: ginkgo
 	SUITE=./test/conformance ./hack/run-e2e-conformance.sh
 
-test-e2e-conformance-virtual-k8s-cluster-ci:
+test-e2e-conformance-virtual-k8s-cluster-ci: ginkgo
 	./hack/run-e2e-conformance-virtual-cluster.sh
 
-test-e2e-conformance-virtual-k8s-cluster:
+test-e2e-conformance-virtual-k8s-cluster: ginkgo
 	SKIP_DELETE=TRUE ./hack/run-e2e-conformance-virtual-cluster.sh
 
-test-e2e-conformance-virtual-ocp-cluster-ci:
+test-e2e-conformance-virtual-ocp-cluster-ci: ginkgo
 	./hack/run-e2e-conformance-virtual-ocp.sh
 
-test-e2e-conformance-virtual-ocp-cluster:
+test-e2e-conformance-virtual-ocp-cluster: ginkgo
 	SKIP_DELETE=TRUE ./hack/run-e2e-conformance-virtual-ocp.sh
 
 redeploy-operator-virtual-cluster:
 	./hack/virtual-cluster-redeploy.sh
 
-test-e2e-validation-only:
-	SUITE=./test/validation ./hack/run-e2e-conformance.sh
+test-e2e-validation-only: ginkgo
+	SUITE=./test/validation ./hack/run-e2e-conformance.sh	
 
 test-e2e: generate manifests skopeo envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir=/tmp -p path)"; source hack/env.sh; HOME="$(shell pwd)" go test ./test/e2e/... -timeout 60m -coverprofile cover.out -v
@@ -242,11 +260,10 @@ undeploy-k8s: export OPERATOR_EXEC=kubectl
 undeploy-k8s: undeploy
 
 deps-update:
-	go mod tidy && \
-	go mod vendor
+	go mod tidy
 
 check-deps: deps-update
-	@set +e; git diff --quiet HEAD go.sum go.mod vendor; \
+	@set +e; git diff --quiet HEAD go.sum go.mod; \
 	if [ $$? -eq 1 ]; \
 	then echo -e "\ngo modules are out of date. Please commit after running 'make deps-update' command\n"; \
 	exit 1; fi
@@ -257,3 +274,19 @@ $(GOLANGCI_LINT): ; $(info installing golangci-lint...)
 .PHONY: lint
 lint: | $(GOLANGCI_LINT) ; $(info  running golangci-lint...) @ ## Run golangci-lint
 	$(GOLANGCI_LINT) run --timeout=10m
+
+$(BIN_DIR):
+	@mkdir -p $(BIN_DIR)
+
+YQ=$(BIN_DIR)/yq
+YQ_VERSION=v4.44.1
+$(YQ): | $(BIN_DIR); $(info installing yq)
+	@curl -fsSL -o $(YQ) https://github.com/mikefarah/yq/releases/download/$(YQ_VERSION)/yq_linux_amd64 && chmod +x $(YQ)
+
+.PHONY: chart-prepare-release
+chart-prepare-release: | $(YQ) ; ## prepare chart for release
+	@GITHUB_TAG=$(GITHUB_TAG) GITHUB_TOKEN=$(GITHUB_TOKEN) GITHUB_REPO_OWNER=$(GITHUB_REPO_OWNER) hack/release/chart-update.sh
+
+.PHONY: chart-push-release
+chart-push-release: ## push release chart
+	@GITHUB_TAG=$(GITHUB_TAG) GITHUB_TOKEN=$(GITHUB_TOKEN) GITHUB_REPO_OWNER=$(GITHUB_REPO_OWNER) hack/release/chart-push.sh

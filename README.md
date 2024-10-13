@@ -28,6 +28,8 @@ The SR-IOV network operator introduces following new CRDs:
 
 - SriovNetwork
 
+- OVSNetwork
+
 - SriovNetworkNodeState
 
 - SriovNetworkNodePolicy
@@ -99,6 +101,42 @@ spec:
       "type": "vrf",
       "vrfname": "red"
     }
+```
+
+### OVSNetwork
+
+A custom resource of OVSNetwork could represent the a layer-2 broadcast domain attached to Open vSwitch that works in HW-offloading mode. 
+It is primarily used to generate a NetworkAttachmentDefinition CR with an OVS CNI plugin configuration. 
+
+The OVSNetwork CR also contains the `resourceName` which is aligned with the `resourceName` of SR-IOV device plugin. One OVSNetwork obj maps to one `resourceName`, but one `resourceName` can be shared by different OVSNetwork CRs.
+
+It is expected that `resourceName` contains name of the resource pool which holds Virtual Functions of a NIC in the switchdev mode. 
+A Physical function of the NIC should be attached to an OVS bridge before any workload which uses OVSNetwork starts.
+
+Example:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: OVSNetwork
+metadata:
+  name: example-network
+  namespace: example-namespace
+spec:
+  ipam: |
+    {
+      "type": "host-local",
+      "subnet": "10.56.217.0/24",
+      "rangeStart": "10.56.217.171",
+      "rangeEnd": "10.56.217.181",
+      "routes": [{
+        "dst": "0.0.0.0/0"
+      }],
+      "gateway": "10.56.217.1"
+    }
+  vlan: 100
+  bridge: my-bridge
+  mtu: 2500
+  resourceName: switchdevnics
 ```
 
 ### SriovNetworkNodeState
@@ -211,6 +249,10 @@ VF groups** (when #-notation is used in pfName field) are merged, otherwise only
 the highest priority policy is applied. In case of same-priority policies and
 overlapping VF groups, only the last processed policy is applied.
 
+When using #-notation to define VF group, no actions are taken on virtual functions that
+are not mentioned in any policy (e.g. if a policy defines a `vfio-pci` device group for a device, when 
+it is deleted the VF are not reset to the default driver).
+
 #### Externally Manage virtual functions
 
 When `ExternallyManage` is request on a policy the operator will only skip the virtual function creation.
@@ -258,6 +300,76 @@ spec:
 ```
 
 > **NOTE**: Currently only `mellanox` plugin can be disabled.
+
+### Parallel draining
+
+It is possible to drain more than one node at a time using this operator.
+
+The configuration is done via the SriovNetworkNodePool, selecting a number of nodes using the node selector and how many
+nodes in parallel from the pool the operator can drain in parallel. maxUnavailable can be a number or a percentage.
+
+> **NOTE**: every node can only be part of one pool, if a node is selected by more than one pool, then it will not be drained
+
+> **NOTE**: If a node is not part of any pool it will have a default configuration of maxUnavailable 1
+
+**Example**:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: worker
+  namespace: sriov-network-operator
+spec:
+  maxUnavailable: 2
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+```
+
+## Feature Gates
+
+Feature gates are used to enable or disable specific features in the operator.
+
+> **NOTE**: As features mature and graduate to stable status, default settings may change, and feature gates might be removed in future releases. Keep this in mind when configuring feature gates and ensure your environment is compatible with any updates.
+
+### Available Feature Gates
+
+1. **Parallel NIC Configuration** (`parallelNicConfig`)
+  - **Description:** Allows the configuration of NICs in parallel, which can potentially reduce the time required for network setup.
+  - **Default:** Disabled
+
+2. **Resource Injector Match Condition** (`resourceInjectorMatchCondition`)
+  - **Description:** Switches the resource injector's webhook failure policy from "Ignore" to "Fail" by utilizing the `MatchConditions` feature introduced in Kubernetes 1.28. This ensures the webhook only targets pods with the `k8s.v1.cni.cncf.io/networks` annotation, improving reliability without affecting other pods.
+  - **Default:** Disabled
+
+3. **Metrics Exporter** (`metricsExporter`)
+  - **Description:** Enables the metrics exporter on the same node where the config-daemon is running. This helps in collecting and exporting metrics related to SR-IOV network devices.
+  - **Default:** Disabled
+
+4. **Manage Software Bridges** (`manageSoftwareBridges`)
+  - **Description:** Allows the operator to manage software bridges. This feature gate is useful for environments where bridge management is required.
+  - **Default:** Disabled
+
+5. **Mellanox Firmware Reset** (`mellanoxFirmwareReset`)
+  - **Description:** Enables the firmware reset via `mstfwreset` before a system reboot. This feature is specific to Mellanox network devices and is used to ensure that the firmware is properly reset during system maintenance.
+  - **Default:** Disabled
+
+### Enabling Feature Gates
+
+To enable a feature gate, add it to your configuration file or command line with the desired state. For example, to enable the `resourceInjectorMatchCondition` feature gate, you would specify:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovOperatorConfig
+metadata:
+  name: default
+  namespace: sriov-network-operator
+spec:
+  featureGates:
+    resourceInjectorMatchCondition: true
+  ...
+```
 
 ## Components and design
 

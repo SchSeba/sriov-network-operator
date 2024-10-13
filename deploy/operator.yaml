@@ -15,6 +15,8 @@ spec:
     metadata:
       labels:
         name: sriov-network-operator
+      annotations:
+        openshift.io/required-scc: restricted-v2
     spec:
       affinity:
         nodeAffinity:
@@ -41,6 +43,8 @@ spec:
           image: $SRIOV_NETWORK_OPERATOR_IMAGE
           command:
           - sriov-network-operator
+          args:
+          - --leader-elect=$OPERATOR_LEADER_ELECTION_ENABLE
           resources:
             requests:
               cpu: 100m
@@ -54,6 +58,10 @@ spec:
               value: $SRIOV_CNI_IMAGE
             - name: SRIOV_INFINIBAND_CNI_IMAGE
               value: $SRIOV_INFINIBAND_CNI_IMAGE
+            - name: OVS_CNI_IMAGE
+              value: $OVS_CNI_IMAGE
+            - name: RDMA_CNI_IMAGE
+              value: $RDMA_CNI_IMAGE
             - name: SRIOV_DEVICE_PLUGIN_IMAGE
               value: $SRIOV_DEVICE_PLUGIN_IMAGE
             - name: NETWORK_RESOURCES_INJECTOR_IMAGE
@@ -64,6 +72,18 @@ spec:
               value: $SRIOV_NETWORK_CONFIG_DAEMON_IMAGE
             - name: SRIOV_NETWORK_WEBHOOK_IMAGE
               value: $SRIOV_NETWORK_WEBHOOK_IMAGE
+            - name: METRICS_EXPORTER_IMAGE
+              value: $METRICS_EXPORTER_IMAGE
+            - name: METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE
+              value: $METRICS_EXPORTER_KUBE_RBAC_PROXY_IMAGE
+            - name: METRICS_EXPORTER_PROMETHEUS_OPERATOR_ENABLED
+              value: "$METRICS_EXPORTER_PROMETHEUS_OPERATOR_ENABLED"
+            - name: METRICS_EXPORTER_PROMETHEUS_DEPLOY_RULES
+              value: "$METRICS_EXPORTER_PROMETHEUS_DEPLOY_RULES"
+            - name: METRICS_EXPORTER_PROMETHEUS_OPERATOR_SERVICE_ACCOUNT
+              value: $METRICS_EXPORTER_PROMETHEUS_OPERATOR_SERVICE_ACCOUNT
+            - name: METRICS_EXPORTER_PROMETHEUS_OPERATOR_NAMESPACE
+              value: $METRICS_EXPORTER_PROMETHEUS_OPERATOR_NAMESPACE
             - name: RESOURCE_PREFIX
               value: $RESOURCE_PREFIX
             - name: DEV_MODE
@@ -96,3 +116,7 @@ spec:
               value: $ADMISSION_CONTROLLERS_CERTIFICATES_OPERATOR_CA_CRT
             - name: ADMISSION_CONTROLLERS_CERTIFICATES_INJECTOR_CA_CRT
               value: $ADMISSION_CONTROLLERS_CERTIFICATES_INJECTOR_CA_CRT
+            - name: METRICS_EXPORTER_SECRET_NAME
+              value: $METRICS_EXPORTER_SECRET_NAME
+            - name: METRICS_EXPORTER_PORT
+              value: "$METRICS_EXPORTER_PORT"

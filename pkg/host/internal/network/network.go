@@ -1,7 +1,9 @@
 package network
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -73,6 +75,7 @@ func (n *network) TryToGetVirtualInterfaceName(pciAddr string) string {
 func (n *network) TryGetInterfaceName(pciAddr string) string {
 	names, err := n.dputilsLib.GetNetNames(pciAddr)
 	if err != nil || len(names) < 1 {
+		log.Log.Error(err, "TryGetInterfaceName(): failed to get interface name")
 		return ""
 	}
 	netDevName := names[0]
@@ -93,8 +96,31 @@ func (n *network) TryGetInterfaceName(pciAddr string) string {
 		return name
 	}
 
-	log.Log.V(2).Info("tryGetInterfaceName()", "name", netDevName)
+	log.Log.V(2).Info("TryGetInterfaceName()", "name", netDevName)
 	return netDevName
+}
+
+// GetInterfaceIndex returns network interface index base on pci address or error if occurred
+func (n *network) GetInterfaceIndex(pciAddr string) (int, error) {
+	ifName := n.TryGetInterfaceName(pciAddr)
+	if ifName == "" {
+		return -1, fmt.Errorf("failed to get interface name")
+	}
+
+	// read the ifindex file from the interface folder
+	indexFile := filepath.Join(vars.FilesystemRoot, consts.SysBusPciDevices, pciAddr, "net", ifName, "ifindex")
+	ifIndex, err := os.ReadFile(indexFile)
+	if err != nil {
+		log.Log.Error(err, "GetInterfaceIndex(): failed to read ifindex file", "indexFile", indexFile)
+		return -1, err
+	}
+
+	intIfIndex, err := strconv.Atoi(strings.TrimSpace(string(ifIndex)))
+	if err != nil {
+		log.Log.Error(err, "GetInterfaceIndex(): failed to parse ifindex file content", "ifIndex", string(ifIndex))
+		return -1, err
+	}
+	return intIfIndex, nil
 }
 
 func (n *network) GetPhysSwitchID(name string) (string, error) {
@@ -187,6 +213,35 @@ func (n *network) GetNetDevMac(ifaceName string) string {
 	return link.Attrs().HardwareAddr.String()
 }
 
+// GetNetDevNodeGUID returns the network interface node GUID if device is RDMA capable otherwise returns empty string
+func (n *network) GetNetDevNodeGUID(pciAddr string) string {
+	if len(pciAddr) == 0 {
+		return ""
+	}
+
+	rdmaDevicesPath := filepath.Join(vars.FilesystemRoot, consts.SysBusPciDevices, pciAddr, "infiniband")
+	rdmaDevices, err := os.ReadDir(rdmaDevicesPath)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Log.Error(err, "GetNetDevNodeGUID(): failed to read RDMA related directory", "pciAddr", pciAddr)
+		}
+		return ""
+	}
+
+	if len(rdmaDevices) != 1 {
+		log.Log.Error(err, "GetNetDevNodeGUID(): expected just one RDMA device", "pciAddr", pciAddr, "numOfDevices", len(rdmaDevices))
+		return ""
+	}
+
+	rdmaLink, err := n.netlinkLib.RdmaLinkByName(rdmaDevices[0].Name())
+	if err != nil {
+		log.Log.Error(err, "GetNetDevNodeGUID(): failed to get RDMA link", "pciAddr", pciAddr)
+		return ""
+	}
+
+	return rdmaLink.Attrs.NodeGuid
+}
+
 func (n *network) GetNetDevLinkSpeed(ifaceName string) string {
 	log.Log.V(2).Info("GetNetDevLinkSpeed(): get LinkSpeed", "device", ifaceName)
 	speedFilePath := filepath.Join(vars.FilesystemRoot, consts.SysClassNet, ifaceName, "speed")
@@ -209,12 +264,12 @@ func (n *network) GetDevlinkDeviceParam(pciAddr, paramName string) (string, erro
 		funcLog.Error(err, "GetDevlinkDeviceParam(): fail to get devlink device param")
 		return "", err
 	}
-	if len(param.Values) == 0 {
-		err = fmt.Errorf("param %s has no value", paramName)
-		funcLog.Error(err, "GetDevlinkDeviceParam(): error")
-		return "", err
+	if len(param.Values) == 0 || param.Values[0].Data == nil {
+		funcLog.Info("GetDevlinkDeviceParam(): WARNING: can't read devlink parameter from the device, an empty value received")
+		return "", nil
 	}
 	var value string
+	var ok bool
 	switch param.Type {
 	case nl.DEVLINK_PARAM_TYPE_U8, nl.DEVLINK_PARAM_TYPE_U16, nl.DEVLINK_PARAM_TYPE_U32:
 		var valData uint64
@@ -226,14 +281,22 @@ func (n *network) GetDevlinkDeviceParam(pciAddr, paramName string) (string, erro
 		case uint32:
 			valData = uint64(v)
 		default:
-			return "", fmt.Errorf("unexpected uint type type")
+			return "", fmt.Errorf("value is not uint")
 		}
 		value = strconv.FormatUint(valData, 10)
 
 	case nl.DEVLINK_PARAM_TYPE_STRING:
-		value = param.Values[0].Data.(string)
+		value, ok = param.Values[0].Data.(string)
+		if !ok {
+			return "", fmt.Errorf("value is not a string")
+		}
 	case nl.DEVLINK_PARAM_TYPE_BOOL:
-		value = strconv.FormatBool(param.Values[0].Data.(bool))
+		var boolValue bool
+		boolValue, ok = param.Values[0].Data.(bool)
+		if !ok {
+			return "", fmt.Errorf("value is not a bool")
+		}
+		value = strconv.FormatBool(boolValue)
 	default:
 		return "", fmt.Errorf("unknown value type: %d", param.Type)
 	}
@@ -328,4 +391,41 @@ func (n *network) EnableHwTcOffload(ifaceName string) error {
 	}
 	log.Log.V(0).Info("EnableHwTcOffload(): feature is still disabled, not supported by device", "device", ifaceName)
 	return nil
+}
+
+// GetNetDevLinkAdminState returns the admin state of the interface.
+func (n *network) GetNetDevLinkAdminState(ifaceName string) string {
+	log.Log.V(2).Info("GetNetDevLinkAdminState(): get LinkAdminState", "device", ifaceName)
+	if len(ifaceName) == 0 {
+		return ""
+	}
+
+	link, err := n.netlinkLib.LinkByName(ifaceName)
+	if err != nil {
+		log.Log.Error(err, "GetNetDevLinkAdminState(): failed to get link", "device", ifaceName)
+		return ""
+	}
+
+	if n.netlinkLib.IsLinkAdminStateUp(link) {
+		return consts.LinkAdminStateUp
+	}
+
+	return consts.LinkAdminStateDown
+}
+
+// GetPciAddressFromInterfaceName parses sysfs to get pci address of an interface by name
+func (n *network) GetPciAddressFromInterfaceName(interfaceName string) (string, error) {
+	log.Log.V(2).Info("GetPciAddressFromInterfaceName(): get pci address", "interface", interfaceName)
+	sysfsPath := filepath.Join(vars.FilesystemRoot, consts.SysClassNet, interfaceName, "device")
+
+	pciDevDir, err := os.Readlink(sysfsPath)
+
+	if err != nil {
+		log.Log.Error(err, "GetPciAddressFromInterfaceName(): failed to get pci device dir", "interface", interfaceName)
+		return "", err
+	}
+
+	pciAddress := filepath.Base(pciDevDir)
+	log.Log.V(2).Info("GetPciAddressFromInterfaceName(): result", "interface", interfaceName, "pci address", pciAddress)
+	return pciAddress, nil
 }

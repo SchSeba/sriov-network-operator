@@ -19,6 +19,7 @@ const (
 	ConfigDaemonPath                   = "./bindata/manifests/daemon"
 	InjectorWebHookPath                = "./bindata/manifests/webhook"
 	OperatorWebHookPath                = "./bindata/manifests/operator-webhook"
+	MetricsExporterPath                = "./bindata/manifests/metrics-exporter"
 	SystemdServiceOcpPath              = "./bindata/manifests/sriov-config-service/openshift"
 	SystemdServiceOcpMachineConfigName = "sriov-config-service"
 	ServiceCAConfigMapAnnotation       = "service.beta.openshift.io/inject-cabundle"
@@ -35,12 +36,18 @@ const (
 	ServiceAccount                     = "ServiceAccount"
 	DPConfigFileName                   = "config.json"
 	OVSHWOLMachineConfigNameSuffix     = "ovs-hw-offload"
+	LeaderElectionID                   = "a56def2a.openshift.io"
 
 	LinkTypeEthernet   = "ether"
 	LinkTypeInfiniband = "infiniband"
 
 	LinkTypeIB  = "IB"
 	LinkTypeETH = "ETH"
+
+	LinkAdminStateUp   = "up"
+	LinkAdminStateDown = "down"
+
+	UninitializedNodeGUID = "0000:0000:0000:0000"
 
 	DeviceTypeVfioPci   = "vfio-pci"
 	DeviceTypeNetDevice = "netdevice"
@@ -54,6 +61,7 @@ const (
 	PfAppliedConfig            = SriovConfBasePath + "/pci"
 	SriovSwitchDevConfPath     = SriovConfBasePath + "/sriov_config.json"
 	SriovHostSwitchDevConfPath = Host + SriovSwitchDevConfPath
+	ManagedOVSBridgesPath      = SriovConfBasePath + "/managed-ovs-bridges.json"
 
 	MachineConfigPoolPausedAnnotation       = "sriovnetwork.openshift.io/state"
 	MachineConfigPoolPausedAnnotationIdle   = "Idle"
@@ -93,9 +101,13 @@ const (
 	BusVdpa               = "vdpa"
 
 	UdevFolder          = "/etc/udev"
+	HostUdevFolder      = Host + UdevFolder
 	UdevRulesFolder     = UdevFolder + "/rules.d"
 	HostUdevRulesFolder = Host + UdevRulesFolder
 	UdevDisableNM       = "/bindata/scripts/udev-find-sriov-pf.sh"
+	UdevRepName         = "/bindata/scripts/switchdev-vf-link-name.sh"
+	// nolint:goconst
+	PFNameUdevRule = `SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", KERNELS=="%s", NAME="%s"`
 	// nolint:goconst
 	NMUdevRule = `SUBSYSTEM=="net", ` +
 		`ACTION=="add|change|move", ` +
@@ -113,7 +125,25 @@ const (
 	KernelArgIntelIommu = "intel_iommu=on"
 	KernelArgIommuPt    = "iommu=pt"
 
+	// Feature gates
+	// ParallelNicConfigFeatureGate: allow to configure nics in parallel
 	ParallelNicConfigFeatureGate = "parallelNicConfig"
+
+	// ResourceInjectorMatchConditionFeatureGate: switch injector to fail policy and add mactch condition
+	// this will make the mutating webhook to be called only when a pod has 'k8s.v1.cni.cncf.io/networks' annotation
+	ResourceInjectorMatchConditionFeatureGate = "resourceInjectorMatchCondition"
+
+	// MetricsExporterFeatureGate: enable SriovNetworkMetricsExporter on the same node as where the config-daemon run
+	MetricsExporterFeatureGate = "metricsExporter"
+
+	// ManageSoftwareBridgesFeatureGate: enables management of software bridges by the operator
+	ManageSoftwareBridgesFeatureGate = "manageSoftwareBridges"
+
+	// MellanoxFirmwareResetFeatureGate: enables the firmware reset via mstfwreset before a reboot
+	MellanoxFirmwareResetFeatureGate = "mellanoxFirmwareReset"
+
+	// The path to the file on the host filesystem that contains the IB GUID distribution for IB VFs
+	InfinibandGUIDConfigFilePath = SriovConfBasePath + "/infiniband/guids"
 )
 
 const (

@@ -15,6 +15,8 @@ import (
 	ethtoolMockPkg "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/ethtool/mock"
 	netlinkMockPkg "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/netlink/mock"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/types"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/test/util/fakefilesystem"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/test/util/helpers"
 )
 
 func getDevlinkParam(t uint8, value interface{}) *netlink.DevlinkParam {
@@ -200,6 +202,85 @@ var _ = Describe("Network", func() {
 			ethtoolLibMock.EXPECT().Change("enp216s0f0np0", map[string]bool{"hw-tc-offload": true}).Return(nil)
 			ethtoolLibMock.EXPECT().Features("enp216s0f0np0").Return(nil, testErr)
 			Expect(n.EnableHwTcOffload("enp216s0f0np0")).To(MatchError(testErr))
+		})
+	})
+	Context("GetNetDevNodeGUID", func() {
+		It("Returns empty when pciAddr is empty", func() {
+			Expect(n.GetNetDevNodeGUID("")).To(Equal(""))
+		})
+		It("Returns empty when infiniband directory can't be read", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{"/sys/bus/pci/devices/0000:4b:00.3/"},
+			})
+			Expect(n.GetNetDevNodeGUID("0000:4b:00.3")).To(Equal(""))
+		})
+		It("Returns empty when more than one RDMA devices are detected for pciAddr", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{
+					"/sys/bus/pci/devices/0000:4b:00.3/infiniband/mlx5_2",
+					"/sys/bus/pci/devices/0000:4b:00.3/infiniband/mlx5_3",
+				},
+			})
+			Expect(n.GetNetDevNodeGUID("0000:4b:00.3")).To(Equal(""))
+		})
+		It("Returns empty when it fails to read RDMA link", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{"/sys/bus/pci/devices/0000:4b:00.3/infiniband/mlx5_2"},
+			})
+			netlinkLibMock.EXPECT().RdmaLinkByName("mlx5_2").Return(nil, fmt.Errorf("some-error"))
+			Expect(n.GetNetDevNodeGUID("0000:4b:00.3")).To(Equal(""))
+		})
+		It("Returns populated node GUID on correct setup", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{"/sys/bus/pci/devices/0000:4b:00.3/infiniband/mlx5_2"},
+			})
+			netlinkLibMock.EXPECT().RdmaLinkByName("mlx5_2").Return(&netlink.RdmaLink{Attrs: netlink.RdmaLinkAttrs{NodeGuid: "1122:3344:5566:7788"}}, nil)
+			Expect(n.GetNetDevNodeGUID("0000:4b:00.3")).To(Equal("1122:3344:5566:7788"))
+		})
+	})
+	Context("GetInterfaceIndex", func() {
+		It("should return valid index", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{
+					"/sys/bus/pci/devices/0000:4b:00.3/net/eth0/",
+					"/sys/class/net/eth0/",
+				},
+				Files: map[string][]byte{
+					"/sys/bus/pci/devices/0000:4b:00.3/net/eth0/ifindex": []byte("42"),
+					"/sys/class/net/eth0/phys_switch_id":                 {},
+				},
+			})
+			dputilsLibMock.EXPECT().GetNetNames("0000:4b:00.3").Return([]string{"eth0"}, nil)
+			index, err := n.GetInterfaceIndex("0000:4b:00.3")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(index).To(Equal(42))
+		})
+		It("should return invalid index", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs: []string{
+					"/sys/bus/pci/devices/0000:4b:00.3/net/eth0",
+					"/sys/class/net/eth0/",
+				},
+				Files: map[string][]byte{
+					"/sys/class/net/eth0/phys_switch_id": {},
+				},
+			})
+			dputilsLibMock.EXPECT().GetNetNames("0000:4b:00.3").Return([]string{"eth0"}, nil)
+			index, err := n.GetInterfaceIndex("0000:4b:00.3")
+			Expect(err).To(HaveOccurred())
+			Expect(index).To(Equal(-1))
+		})
+	})
+	Context("GetPciAddressFromInterfaceName", func() {
+		It("Should get PCI address from sys fs", func() {
+			helpers.GinkgoConfigureFakeFS(&fakefilesystem.FS{
+				Dirs:     []string{"/sys/bus/pci/0000:3b:00.0", "/sys/class/net/ib216s0f0"},
+				Symlinks: map[string]string{"/sys/class/net/ib216s0f0/device": "/sys/bus/pci/0000:3b:00.0"},
+			})
+
+			pci, err := n.GetPciAddressFromInterfaceName("ib216s0f0")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pci).To(Equal("0000:3b:00.0"))
 		})
 	})
 })

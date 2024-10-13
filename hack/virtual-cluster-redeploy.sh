@@ -19,10 +19,14 @@ if [ $CLUSTER_TYPE == "openshift" ]; then
   echo ${auth} > registry-login.conf
 
   internal_registry="image-registry.openshift-image-registry.svc:5000"
-  pass=$( jq .\"$internal_registry\".password registry-login.conf )
+  pass=$( jq .\"image-registry.openshift-image-registry.svc:5000\".auth registry-login.conf  )
+  pass=`echo ${pass:1:-1} | base64 -d`
+
+  # dockercfg password is in the form `<token>:password`. We need to trim the `<token>:` prefix
+  pass=${pass#"<token>:"}
 
   registry="default-route-openshift-image-registry.apps.${cluster_name}.${domain_name}"
-  podman login -u serviceaccount -p ${pass:1:-1} $registry --tls-verify=false
+  podman login -u serviceaccount -p ${pass} $registry --tls-verify=false
 
   export SRIOV_NETWORK_OPERATOR_IMAGE="$registry/$NAMESPACE/sriov-network-operator:latest"
   export SRIOV_NETWORK_CONFIG_DAEMON_IMAGE="$registry/$NAMESPACE/sriov-network-config-daemon:latest"
@@ -38,9 +42,13 @@ else
   export SRIOV_NETWORK_OPERATOR_IMAGE="$controller_ip:5000/sriov-network-operator:latest"
   export SRIOV_NETWORK_CONFIG_DAEMON_IMAGE="$controller_ip:5000/sriov-network-config-daemon:latest"
   export SRIOV_NETWORK_WEBHOOK_IMAGE="$controller_ip:5000/sriov-network-operator-webhook:latest"
+
+  export ADMISSION_CONTROLLERS_CERTIFICATES_CERT_MANAGER_ENABLED=true
+  export CNI_BIN_PATH=/opt/cni/bin
 fi
 
 export ADMISSION_CONTROLLERS_ENABLED=true
+export OPERATOR_LEADER_ELECTION_ENABLE=true
 export SKIP_VAR_SET=""
 export OPERATOR_NAMESPACE=$NAMESPACE
 export OPERATOR_EXEC=kubectl
@@ -64,9 +72,11 @@ if [ $CLUSTER_TYPE == "openshift" ]; then
   export SRIOV_NETWORK_OPERATOR_IMAGE="image-registry.openshift-image-registry.svc:5000/$NAMESPACE/sriov-network-operator:latest"
   export SRIOV_NETWORK_CONFIG_DAEMON_IMAGE="image-registry.openshift-image-registry.svc:5000/$NAMESPACE/sriov-network-config-daemon:latest"
   export SRIOV_NETWORK_WEBHOOK_IMAGE="image-registry.openshift-image-registry.svc:5000/$NAMESPACE/sriov-network-operator-webhook:latest"
+  echo "## deploying SRIOV Network Operator"
+  hack/deploy-setup.sh $NAMESPACE
+else
+  export HELM_MODE=upgrade
+  hack/deploy-operator-helm.sh
 fi
-
-echo "## deploying SRIOV Network Operator"
-hack/deploy-setup.sh $NAMESPACE
 
 kubectl -n ${NAMESPACE} delete po --all
