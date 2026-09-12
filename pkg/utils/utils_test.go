@@ -1,84 +1,46 @@
-package utils_test
+package utils
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	utils "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/utils"
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/sys/unix"
 )
 
-var _ = Describe("HashConfigMap", func() {
-	It("should hash the ConfigMap correctly", func() {
-		data := make(map[string]string)
-		data["key1"] = "value1"
-		data["key2"] = "value2"
-		cm := &corev1.ConfigMap{
-			Data: data,
-		}
+func TestWriteFileWithTimeout_Success(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test")
+	data := []byte("hello")
 
-		expectedHash := "7cb7a94f45100d7dc8aadffbcd409f25"
+	err := WriteFileWithTimeout(tmpFile, data, 0644, 5*time.Second)
+	assert.NoError(t, err, "expected no error writing file")
 
-		actualHash := utils.HashConfigMap(cm)
+	got, err := os.ReadFile(tmpFile)
+	assert.NoError(t, err, "expected no error reading file")
+	assert.Equal(t, data, got, "file contents do not match expected")
+}
 
-		Expect(actualHash).To(Equal(expectedHash))
-	})
+func TestWriteFileWithTimeout_WriteError(t *testing.T) {
+	// Writing to a path that doesn't exist should return the underlying error, not a timeout.
+	err := WriteFileWithTimeout("/nonexistent/dir/file", []byte("x"), 0644, 5*time.Second)
+	assert.Error(t, err, "expected error for nonexistent path")
+}
 
-	It("Should not change hash for different resource versions", func() {
-		data := make(map[string]string)
-		data["key1"] = "value1"
-		data["key2"] = "value2"
+func TestWriteFileWithTimeout_Timeout(t *testing.T) {
+	// A named pipe (FIFO) blocks on open/write until a reader is connected,
+	// which makes it a reliable way to simulate a blocking write.
+	fifoPath := filepath.Join(t.TempDir(), "fifo")
+	assert.NoError(t, unix.Mkfifo(fifoPath, 0600), "failed to create FIFO")
+	defer os.Remove(fifoPath)
 
-		cm1 := &corev1.ConfigMap{
-			Data: data,
-			ObjectMeta: metav1.ObjectMeta{
-				ResourceVersion: "68790",
-			},
-		}
+	start := time.Now()
+	err := WriteFileWithTimeout(fifoPath, []byte("data"), 0644, 100*time.Millisecond)
+	elapsed := time.Since(start)
 
-		cm2 := &corev1.ConfigMap{
-			Data: data,
-			ObjectMeta: metav1.ObjectMeta{
-				ResourceVersion: "69889",
-			},
-		}
-
-		hash1 := utils.HashConfigMap(cm1)
-		hash2 := utils.HashConfigMap(cm2)
-
-		Expect(hash1).To(Equal(hash2))
-	})
-
-	It("should not change hash for different key orderings", func() {
-		data1 := map[string]string{}
-		data1["key1"] = "value1"
-		data1["key2"] = "value2"
-		data2 := map[string]string{}
-		data2["key1"] = "value1"
-		data2["key2"] = "value2"
-		// Collisions in the hashmap _can_ change the order of keys
-		data2["key2"] = "value2"
-
-		cm1 := &corev1.ConfigMap{
-			Data: data1,
-		}
-
-		cm2 := &corev1.ConfigMap{
-			Data: data2,
-		}
-
-		hash1 := utils.HashConfigMap(cm1)
-		hash2 := utils.HashConfigMap(cm2)
-
-		Expect(hash1).To(Equal(hash2))
-	})
-})
-
-func TestUtils(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Utils Suite")
+	assert.EqualError(t, err, "timeout writing to file "+fifoPath+" after 100ms", "expected timeout error")
+	// The elapsed time should be close to the specified timeout, indicating that the function properly timed out.
+	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond, "function returned too quickly, timeout may not have triggered")
+	assert.Less(t, elapsed, 5*time.Second, "function took too long, timeout did not fire in time")
 }

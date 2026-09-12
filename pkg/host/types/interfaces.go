@@ -1,8 +1,6 @@
 package types
 
 import (
-	"github.com/coreos/go-systemd/v22/unit"
-	"github.com/jaypipes/ghw"
 	"github.com/vishvananda/netlink"
 
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
@@ -14,12 +12,8 @@ type KernelInterface interface {
 	TryEnableTun()
 	// TryEnableVhostNet load the vhost-net kernel module
 	TryEnableVhostNet()
-	// TryEnableRdma tries to enable RDMA on the machine base on the operating system
-	// if the package doesn't exist it will also will try to install it
-	// supported operating systems are RHEL RHCOS and ubuntu
-	TryEnableRdma() (bool, error)
-	// TriggerUdevEvent triggers a udev event
-	TriggerUdevEvent() error
+	// CheckRDMAEnabled returns true if RDMA modules are loaded on host
+	CheckRDMAEnabled() (bool, error)
 	// GetCurrentKernelArgs reads the /proc/cmdline to check the current kernel arguments
 	GetCurrentKernelArgs() (string, error)
 	// IsKernelArgsSet check is the requested kernel arguments are set
@@ -54,26 +48,8 @@ type KernelInterface interface {
 	LoadKernelModule(name string, args ...string) error
 	// IsKernelModuleLoaded returns try if the requested kernel module is loaded
 	IsKernelModuleLoaded(name string) (bool, error)
-	// ReloadDriver reloads a requested driver
-	ReloadDriver(driver string) error
 	// IsKernelLockdownMode returns true if the kernel is in lockdown mode
 	IsKernelLockdownMode() bool
-	// IsRHELSystem returns try if the system is a RHEL base
-	IsRHELSystem() (bool, error)
-	// IsUbuntuSystem returns try if the system is an ubuntu base
-	IsUbuntuSystem() (bool, error)
-	// IsCoreOS returns true if the system is a CoreOS or RHCOS base
-	IsCoreOS() (bool, error)
-	// RdmaIsLoaded returns try if RDMA kernel modules are loaded
-	RdmaIsLoaded() (bool, error)
-	// EnableRDMA enable RDMA on the system
-	EnableRDMA(conditionFilePath, serviceName, packageManager string) (bool, error)
-	// InstallRDMA install RDMA packages on the system
-	InstallRDMA(packageManager string) error
-	// EnableRDMAOnRHELMachine enable RDMA on a RHEL base system
-	EnableRDMAOnRHELMachine() (bool, error)
-	// GetOSPrettyName returns OS name
-	GetOSPrettyName() (string, error)
 }
 
 type NetworkInterface interface {
@@ -83,6 +59,8 @@ type NetworkInterface interface {
 	TryToGetVirtualInterfaceName(pciAddr string) string
 	// TryGetInterfaceName tries to find the SR-IOV virtual interface name base on pci address
 	TryGetInterfaceName(pciAddr string) string
+	// GetInterfaceIndex returns network interface index base on pci address or error if occurred
+	GetInterfaceIndex(pciAddr string) (int, error)
 	// GetPhysSwitchID returns the physical switch ID for a specific pci address
 	GetPhysSwitchID(name string) (string, error)
 	// GetPhysPortName returns the physical port name for a specific pci address
@@ -95,6 +73,8 @@ type NetworkInterface interface {
 	SetNetdevMTU(pciAddr string, mtu int) error
 	// GetNetDevMac returns the network interface mac address
 	GetNetDevMac(name string) string
+	// GetNetDevNodeGUID returns the network interface node GUID if device is RDMA capable otherwise returns empty string
+	GetNetDevNodeGUID(pciAddr string) string
 	// GetNetDevLinkSpeed returns the network interface link speed
 	GetNetDevLinkSpeed(name string) string
 	// GetDevlinkDeviceParam returns devlink parameter for the device as a string, if the parameter has multiple values
@@ -106,6 +86,14 @@ type NetworkInterface interface {
 	SetDevlinkDeviceParam(pciAddr, paramName, value string) error
 	// EnableHwTcOffload make sure that hw-tc-offload feature is enabled if device supports it
 	EnableHwTcOffload(ifaceName string) error
+	// GetNetDevLinkAdminState returns the admin state of the interface.
+	GetNetDevLinkAdminState(ifaceName string) string
+	// GetPciAddressFromInterfaceName parses sysfs to get pci address of an interface by name
+	GetPciAddressFromInterfaceName(interfaceName string) (string, error)
+	// DiscoverRDMASubsystem returns RDMA subsystem mode
+	DiscoverRDMASubsystem() (string, error)
+	// SetRDMASubsystem changes RDMA subsystem mode
+	SetRDMASubsystem(mode string) error
 }
 
 type ServiceInterface interface {
@@ -119,13 +107,9 @@ type ServiceInterface interface {
 	EnableService(service *Service) error
 	// ReadServiceManifestFile reads the systemd manifest for a specific service
 	ReadServiceManifestFile(path string) (*Service, error)
-	// RemoveFromService removes a systemd service from the host
-	RemoveFromService(service *Service, options ...*unit.UnitOption) (*Service, error)
-	// ReadScriptManifestFile reads the script manifest from a systemd service
-	ReadScriptManifestFile(path string) (*ScriptManifestFile, error)
 	// ReadServiceInjectionManifestFile reads the injection manifest file for the systemd service
 	ReadServiceInjectionManifestFile(path string) (*Service, error)
-	// CompareServices compare two servers and return true if they are equal
+	// CompareServices returns true if serviceA needs update(doesn't contain all fields from service B)
 	CompareServices(serviceA, serviceB *Service) (bool, error)
 	// UpdateSystemService updates a system service on the host
 	UpdateSystemService(serviceObj *Service) error
@@ -135,10 +119,6 @@ type SriovInterface interface {
 	// SetSriovNumVfs changes the number of virtual functions allocated for a specific
 	// physical function base on pci address
 	SetSriovNumVfs(pciAddr string, numVfs int) error
-	// GetVfInfo returns the virtual function information is the operator struct from the host information
-	GetVfInfo(pciAddr string, devices []*ghw.PCIDevice) sriovnetworkv1.VirtualFunction
-	// SetVfGUID sets the GUID for a virtual function
-	SetVfGUID(vfAddr string, pfLink netlink.Link) error
 	// VFIsReady returns the interface virtual function if the device is ready
 	VFIsReady(pciAddr string) (netlink.Link, error)
 	// SetVfAdminMac sets the virtual function administrative mac address via the physical function
@@ -156,28 +136,41 @@ type SriovInterface interface {
 	ResetSriovDevice(ifaceStatus sriovnetworkv1.InterfaceExt) error
 	// DiscoverSriovDevices returns a list of all the available SR-IOV capable network interfaces on the system
 	DiscoverSriovDevices(storeManager store.ManagerInterface) ([]sriovnetworkv1.InterfaceExt, error)
+	// DiscoverSriovVirtualDevices returns a list of all the available SR-IOV VF network interfaces on the system.
+	// Only supported on virtual environments where we don't have the physical function.
+	DiscoverSriovVirtualDevices() ([]sriovnetworkv1.InterfaceExt, error)
 	// ConfigSriovInterfaces configure multiple SR-IOV devices with the desired configuration
 	// if skipVFConfiguration flag is set, the function will configure PF and create VFs on it, but will skip VFs configuration
 	ConfigSriovInterfaces(storeManager store.ManagerInterface, interfaces []sriovnetworkv1.Interface,
-		ifaceStatuses []sriovnetworkv1.InterfaceExt, pfsToConfig map[string]bool, skipVFConfiguration bool) error
-	// ConfigSriovInterfaces configure virtual functions for virtual environments with the desired configuration
-	ConfigSriovDeviceVirtual(iface *sriovnetworkv1.Interface) error
+		ifaceStatuses []sriovnetworkv1.InterfaceExt, skipVFConfiguration bool) error
+	// ConfigSriovDevicesVirtual configure virtual functions for virtual environments with the desired configuration
+	ConfigSriovDevicesVirtual(storeManager store.ManagerInterface, interfaces []sriovnetworkv1.Interface,
+		ifaceStatuses []sriovnetworkv1.InterfaceExt) error
 }
 
 type UdevInterface interface {
-	// WriteSwitchdevConfFile writes the needed switchdev configuration files for HW offload support
-	WriteSwitchdevConfFile(newState *sriovnetworkv1.SriovNetworkNodeState, pfsToSkip map[string]bool) (bool, error)
 	// PrepareNMUdevRule creates the needed udev rules to disable NetworkManager from
 	// our managed SR-IOV virtual functions
-	PrepareNMUdevRule(supportedVfIds []string) error
-	// AddUdevRule adds a udev rule that disables network-manager for VFs on the concrete PF
-	AddUdevRule(pfPciAddress string) error
-	// RemoveUdevRule removes a udev rule that disables network-manager for VFs on the concrete PF
-	RemoveUdevRule(pfPciAddress string) error
+	PrepareNMUdevRule() error
+	// PrepareVFRepUdevRule creates a script which helps to configure representor name for the VF
+	PrepareVFRepUdevRule() error
+	// AddDisableNMUdevRule adds udev rule that disables NetworkManager for VFs on the concrete PF:
+	AddDisableNMUdevRule(pfPciAddress string) error
+	// RemoveDisableNMUdevRule removes udev rule that disables NetworkManager for VFs on the concrete PF
+	RemoveDisableNMUdevRule(pfPciAddress string) error
+	// AddPersistPFNameUdevRule add udev rule that preserves PF name after switching to switchdev mode
+	AddPersistPFNameUdevRule(pfPciAddress, pfName string) error
+	// RemovePersistPFNameUdevRule removes udev rule that preserves PF name after switching to switchdev mode
+	RemovePersistPFNameUdevRule(pfPciAddress string) error
 	// AddVfRepresentorUdevRule adds udev rule that renames VF representors on the concrete PF
 	AddVfRepresentorUdevRule(pfPciAddress, pfName, pfSwitchID, pfSwitchPort string) error
 	// RemoveVfRepresentorUdevRule removes udev rule that renames VF representors on the concrete PF
 	RemoveVfRepresentorUdevRule(pfPciAddress string) error
+	// LoadUdevRules triggers udev rules for network subsystem
+	LoadUdevRules() error
+	// WaitUdevEventsProcessed calls `udevadm settle“ with provided timeout
+	// The command watches the udev event queue, and exits if all current events are handled.
+	WaitUdevEventsProcessed(timeout int) error
 }
 
 type VdpaInterface interface {
@@ -188,4 +181,44 @@ type VdpaInterface interface {
 	// DiscoverVDPAType returns type of existing VDPA device for VF,
 	// returns empty string if VDPA device not found or unknown driver is in use
 	DiscoverVDPAType(pciAddr string) string
+}
+
+type BridgeInterface interface {
+	// DiscoverBridges returns information about managed bridges on the host
+	DiscoverBridges() (sriovnetworkv1.Bridges, error)
+	// ConfigureBridge configure managed bridges for the host
+	ConfigureBridges(bridgesSpec sriovnetworkv1.Bridges, bridgesStatus sriovnetworkv1.Bridges) error
+	// DetachUplinkAndVFRepresentorsFromManagedBridge detaches a PF uplink and all of
+	// its VF representors from a managed bridge.
+	DetachUplinkAndVFRepresentorsFromManagedBridge(pciAddr string) error
+}
+
+type InfinibandInterface interface {
+	// ConfigureVfGUID configures and sets a GUID for an IB VF device
+	ConfigureVfGUID(vfAddr string, pfAddr string, vfID int, pfLink netlink.Link) error
+}
+
+type CPUVendor int
+
+const (
+	CPUVendorIntel CPUVendor = iota
+	CPUVendorAMD
+	CPUVendorARM
+	CPUVendorS390X
+)
+
+type CPUInfoProviderInterface interface {
+	// Retrieve the CPU vendor of the current system
+	GetCPUVendor() (CPUVendor, error)
+}
+
+type SystemdInterface interface {
+	ReadConfFile() (spec *SriovConfig, err error)
+	WriteConfFile(newState *sriovnetworkv1.SriovNetworkNodeState) (bool, error)
+	WriteSriovResult(result *SriovResult) error
+	ReadSriovResult() (*SriovResult, error)
+	RemoveSriovResult() error
+	WriteSriovSupportedNics() error
+	ReadSriovSupportedNics() ([]string, error)
+	CleanSriovFilesFromHost(isOpenShift bool) error
 }
