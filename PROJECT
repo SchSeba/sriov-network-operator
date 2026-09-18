@@ -1,6 +1,6 @@
 domain: openshift.io
 layout:
-- go.kubebuilder.io/v3
+- go.kubebuilder.io/v4
 projectName: sriov-network-operator
 repo: github.com/k8snetworkplumbingwg/sriov-network-operator
 resources:
@@ -47,6 +47,15 @@ resources:
   domain: openshift.io
   group: sriovnetwork
   kind: SriovOperatorConfig
+  path: github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: openshift.io
+  group: sriovnetwork
+  kind: OVSNetwork
   path: github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1
   version: v1
 version: "3"
