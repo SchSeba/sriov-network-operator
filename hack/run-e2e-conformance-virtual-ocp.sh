@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -xeo pipefail
 
-OCP_VERSION=${OCP_VERSION:-4.14.0-rc.6}
+OCP_VERSION=${OCP_VERSION:-4.22.3}
+OCP_RELEASE_TYPE=${OCP_RELEASE_TYPE:-stable}
 cluster_name=${CLUSTER_NAME:-ocp-virt}
 domain_name=lab
 
 api_ip=${API_IP:-192.168.123.253}
 virtual_router_id=${VIRTUAL_ROUTER_ID:-253}
 registry="default-route-openshift-image-registry.apps.${cluster_name}.${domain_name}"
-HOME="/root"
 
 NUM_OF_WORKERS=${NUM_OF_WORKERS:-3}
 total_number_of_nodes=$((1 + NUM_OF_WORKERS))
@@ -42,6 +42,7 @@ kcli delete network $cluster_name -y
 function cleanup {
   kcli delete cluster $cluster_name -y
   kcli delete network $cluster_name -y
+  sudo rm -f /etc/containers/registries.conf.d/003-${cluster_name}.conf
 }
 
 if [ -z $SKIP_DELETE ]; then
@@ -52,6 +53,7 @@ kcli create network -c 192.168.123.0/24 ocp
 kcli create network -c 192.168.${virtual_router_id}.0/24 --nodhcp -i $cluster_name
 
 cat <<EOF > ./${cluster_name}-plan.yaml
+version: $OCP_RELEASE_TYPE
 tag: $OCP_VERSION
 ctlplane_memory: 32768
 worker_memory: 8192
@@ -65,7 +67,7 @@ ctlplanes: 1
 workers: $NUM_OF_WORKERS
 machine: q35
 network_type: OVNKubernetes
-pull_secret: /root/openshift_pull.json
+pull_secret: $HOME/openshift_pull.json
 vmrules:
   - $cluster_name-worker-.*:
       nets:
@@ -134,9 +136,29 @@ controller_ip=`kubectl get node -o wide | grep ctlp | awk '{print $6}'`
 
 if [ `cat /etc/hosts | grep ${api_ip} | grep "default-route-openshift-image-registry.apps.${cluster_name}.${domain_name}" | wc -l` == 0 ]; then
   echo "adding registry to hosts"
-  sed -i "s/${api_ip}/${api_ip} default-route-openshift-image-registry.apps.${cluster_name}.${domain_name}/g" /etc/hosts
+  sudo sed -i "s/${api_ip}/${api_ip} default-route-openshift-image-registry.apps.${cluster_name}.${domain_name}/g" /etc/hosts
 fi
 
+# Create performance profile to allocate hugepages
+cat <<EOF | oc apply -f -
+apiVersion: performance.openshift.io/v1
+kind: PerformanceProfile
+metadata:
+  name: performance
+spec:
+  cpu:
+    isolated: "2-5"
+    reserved: "0-1"
+  hugepages:
+    defaultHugepagesSize: 2M
+    pages:
+      - count: 16
+        size: 2M
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  realTimeKernel:
+    enabled: false
+EOF
 
 cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -181,6 +203,8 @@ kubectl patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spe
 kubectl patch ingresscontrollers.operator.openshift.io/default -n openshift-ingress-operator --patch '{"spec":{"replicas": 1}}' --type=merge
 
 export ADMISSION_CONTROLLERS_ENABLED=true
+export OPERATOR_WEBHOOK_NETWORK_POLICY_PORT=${OPERATOR_WEBHOOK_NETWORK_POLICY_PORT:-"6443"}
+export INJECTOR_WEBHOOK_NETWORK_POLICY_PORT=${INJECTOR_WEBHOOK_NETWORK_POLICY_PORT:-"6443"}
 export SKIP_VAR_SET=""
 export NAMESPACE="openshift-sriov-network-operator"
 export OPERATOR_NAMESPACE=$NAMESPACE
@@ -189,6 +213,10 @@ export OPERATOR_EXEC=kubectl
 export CLUSTER_TYPE=openshift
 export DEV_MODE=TRUE
 export CLUSTER_HAS_EMULATED_PF=TRUE
+export METRICS_EXPORTER_PROMETHEUS_OPERATOR_ENABLED=true
+export METRICS_EXPORTER_PROMETHEUS_DEPLOY_RULES=true
+export METRICS_EXPORTER_PROMETHEUS_OPERATOR_SERVICE_ACCOUNT=${METRICS_EXPORTER_PROMETHEUS_OPERATOR_SERVICE_ACCOUNT:-"prometheus-k8s"}
+export METRICS_EXPORTER_PROMETHEUS_OPERATOR_NAMESPACE=${METRICS_EXPORTER_PROMETHEUS_OPERATOR_NAMESPACE:-"openshift-monitoring"}
 
 export SRIOV_NETWORK_OPERATOR_IMAGE="$registry/$NAMESPACE/sriov-network-operator:latest"
 export SRIOV_NETWORK_CONFIG_DAEMON_IMAGE="$registry/$NAMESPACE/sriov-network-config-daemon:latest"
@@ -205,6 +233,130 @@ podman build -t "${SRIOV_NETWORK_CONFIG_DAEMON_IMAGE}" -f "${root}/Dockerfile.sr
 echo "## build webhook image"
 podman build -t "${SRIOV_NETWORK_WEBHOOK_IMAGE}" -f "${root}/Dockerfile.webhook" "${root}"
 
+echo "## wait for the all cluster to be stable"
+MAX_RETRIES=20
+DELAY_SECONDS=10
+retries=0
+until [ $retries -ge $MAX_RETRIES ]; do
+  # wait for all the openshift cluster operators to be available and not progressing
+  if kubectl get nodes >/dev/null 2>&1; then
+    if clusteroperators=$(kubectl get clusteroperator --no-headers 2>/dev/null); then
+      not_available=$(printf '%s\n' "$clusteroperators" | awk '{print $3}' | { grep -v True || true; } | wc -l)
+      progressing=$(printf '%s\n' "$clusteroperators" | awk '{print $4}' | { grep True || true; } | wc -l)
+      if [ "$not_available" -eq 0 ] && [ "$progressing" -eq 0 ]; then
+        break
+      fi
+      echo "cluster operators are not ready (unavailable=$not_available, progressing=$progressing). Retrying... (Attempt $retries/$MAX_RETRIES)"
+    else
+      echo "Unable to query cluster operators. Retrying... (Attempt $retries/$MAX_RETRIES)"
+    fi
+  else
+    echo "API not reachable. Retrying... (Attempt $retries/$MAX_RETRIES)"
+  fi
+  retries=$((retries+1))
+  sleep $DELAY_SECONDS
+done
+
+if [ $retries -eq $MAX_RETRIES ]; then
+  echo "Max retries reached. Exiting..."
+  exit 1
+fi
+
+master_node_name="${cluster_name}-ctlplane-0.${domain_name}"
+echo "## capturing pre-TechPreview master MachineConfig"
+MAX_RETRIES=20
+DELAY_SECONDS=10
+retries=0
+pre_techpreview_master_config=""
+until [ $retries -ge $MAX_RETRIES ]; do
+  pre_techpreview_master_config=$(kubectl get node "${master_node_name}" -o jsonpath='{.metadata.annotations.machineconfiguration\.openshift\.io/currentConfig}' 2>/dev/null || true)
+  if [ -n "$pre_techpreview_master_config" ]; then
+    break
+  fi
+  retries=$((retries+1))
+  echo "Pre-TechPreview master MachineConfig is not available yet. Retrying... (Attempt $retries/$MAX_RETRIES)"
+  sleep $DELAY_SECONDS
+done
+
+if [ -z "$pre_techpreview_master_config" ]; then
+  echo "Failed to capture pre-TechPreview master MachineConfig. Exiting..."
+  exit 1
+fi
+
+echo "## enabling TechPreviewNoUpgrade feature set"
+kubectl patch featuregate cluster --type merge -p '{"spec":{"featureSet":"TechPreviewNoUpgrade"}}'
+
+# Trigger CRIOCredentialProviderConfig early to avoid a late MCO-driven master reboot
+# during the test phase. The CRD is created by the CVO after TechPreview is enabled,
+# so we wait for it and then create the resource to force the MCO reboot now
+# instead of mid-test.
+echo "## waiting for CRIOCredentialProviderConfig CRD and creating resource"
+for i in $(seq 1 30); do
+  if kubectl get crd criocredentialproviderconfigs.config.openshift.io &>/dev/null; then
+    echo "CRD available, creating CRIOCredentialProviderConfig resource"
+    cat <<CRIOPROVIDER | kubectl apply -f - 2>/dev/null || true
+apiVersion: config.openshift.io/v1alpha1
+kind: CRIOCredentialProviderConfig
+metadata:
+  name: cluster
+spec: {}
+CRIOPROVIDER
+    break
+  fi
+  echo "Waiting for CRIOCredentialProviderConfig CRD... (Attempt $i/30)"
+  sleep 10
+done
+
+echo "## waiting for TechPreview-triggered master MachineConfig rollout"
+MAX_RETRIES=80
+DELAY_SECONDS=30
+retries=0
+techpreview_rollout_seen=false
+until [ $retries -ge $MAX_RETRIES ]; do
+  if kubectl get nodes >/dev/null 2>&1; then
+    master_current_config=$(kubectl get node "${master_node_name}" -o jsonpath='{.metadata.annotations.machineconfiguration\.openshift\.io/currentConfig}' 2>/dev/null || true)
+    master_desired_config=$(kubectl get node "${master_node_name}" -o jsonpath='{.metadata.annotations.machineconfiguration\.openshift\.io/desiredConfig}' 2>/dev/null || true)
+    master_state=$(kubectl get node "${master_node_name}" -o jsonpath='{.metadata.annotations.machineconfiguration\.openshift\.io/state}' 2>/dev/null || true)
+    if clusteroperators=$(kubectl get clusteroperator --no-headers 2>/dev/null) && mcp_output=$(kubectl get mcp --no-headers 2>/dev/null); then
+      not_available=$(printf '%s\n' "$clusteroperators" | awk '{print $3}' | { grep -v True || true; } | wc -l)
+      progressing=$(printf '%s\n' "$clusteroperators" | awk '{print $4}' | { grep True || true; } | wc -l)
+      updating=$(printf '%s\n' "$mcp_output" | awk '{print $4}' | grep -c True || true)
+      if [ -n "$master_desired_config" ] && [ "$master_desired_config" != "$pre_techpreview_master_config" ]; then
+        techpreview_rollout_seen=true
+      fi
+      if [ "$techpreview_rollout_seen" = true ] && [ "$master_current_config" = "$master_desired_config" ] && [ "$master_state" = "Done" ] && [ "$not_available" -eq 0 ] && [ "$progressing" -eq 0 ] && [ "$updating" -eq 0 ]; then
+        echo "Cluster is stable after TechPreview enablement and master MachineConfig rollout completed"
+        break
+      fi
+      echo "Cluster not yet stable after TechPreview (rollout_seen=$techpreview_rollout_seen, current=$master_current_config, desired=$master_desired_config, state=$master_state, unavailable=$not_available, progressing=$progressing, mcp_updating=$updating). Retrying... (Attempt $retries/$MAX_RETRIES)"
+    else
+      echo "Unable to query cluster operators or MachineConfigPools. Retrying... (Attempt $retries/$MAX_RETRIES)"
+    fi
+  else
+    echo "API not reachable. Retrying... (Attempt $retries/$MAX_RETRIES)"
+  fi
+  retries=$((retries+1))
+  sleep $DELAY_SECONDS
+done
+
+if [ $retries -eq $MAX_RETRIES ]; then
+  echo "Max retries reached waiting for TechPreview MachineConfig rollout. Exiting..."
+  exit 1
+fi
+
+echo "## wait for MachineConfigPools to finish updating"
+retries=0
+until [ $retries -ge $MAX_RETRIES ]; do
+  updating=$(kubectl get mcp --no-headers 2>/dev/null | awk '{print $4}' | grep -c True || true)
+  if [ "$updating" -eq 0 ]; then
+    echo "All MachineConfigPools are stable"
+    break
+  fi
+  retries=$((retries+1))
+  echo "MachineConfigPools still updating. Retrying... (Attempt $retries/$MAX_RETRIES)"
+  sleep $DELAY_SECONDS
+done
+
 echo "## wait for registry to be available"
 kubectl wait configs.imageregistry.operator.openshift.io/cluster --for=condition=Available --timeout=120s
 
@@ -215,8 +367,13 @@ auth=`echo ${auth} | base64 -d`
 echo ${auth} > registry-login.conf
 
 internal_registry="image-registry.openshift-image-registry.svc:5000"
-pass=$( jq .\"$internal_registry\".password registry-login.conf )
-podman login -u serviceaccount -p ${pass:1:-1} $registry --tls-verify=false
+pass=$( jq .\"image-registry.openshift-image-registry.svc:5000\".auth registry-login.conf  )
+pass=`echo ${pass:1:-1} | base64 -d`
+
+# dockercfg password is in the form `<token>:password`. We need to trim the `<token>:` prefix
+pass=${pass#"<token>:"}
+
+podman login -u serviceaccount -p ${pass} $registry --tls-verify=false
 
 MAX_RETRIES=20
 DELAY_SECONDS=10
@@ -247,7 +404,7 @@ podman rmi -fi ${SRIOV_NETWORK_WEBHOOK_IMAGE}
 podman logout $registry
 
 echo "## apply CRDs"
-kubectl apply -k $root/config/crd
+kubectl apply -f $root/config/crd/bases
 
 
 cat <<EOF | kubectl apply -f -
@@ -282,8 +439,20 @@ if [[ -v LOCAL_NETWORK_RESOURCES_INJECTOR_IMAGE ]]; then
   export NETWORK_RESOURCES_INJECTOR_IMAGE="image-registry.openshift-image-registry.svc:5000/$NAMESPACE/network-resources-injector:latest"
 fi
 
+if [[ -v LOCAL_SRIOV_NETWORK_METRICS_EXPORTER_IMAGE ]]; then
+  podman_tag_and_push ${LOCAL_SRIOV_NETWORK_METRICS_EXPORTER_IMAGE} "$registry/$NAMESPACE/sriov-network-metrics-exporter:latest"
+  export METRICS_EXPORTER_IMAGE="image-registry.openshift-image-registry.svc:5000/$NAMESPACE/sriov-network-metrics-exporter:latest"
+fi
+
 echo "## deploying SRIOV Network Operator"
 hack/deploy-setup.sh $NAMESPACE
+
+function cluster_info {
+  if [[ -v TEST_REPORT_PATH ]]; then
+    kubectl cluster-info dump --namespaces ${NAMESPACE},${MULTUS_NAMESPACE} --output-directory "${root}/${TEST_REPORT_PATH}/cluster-info"
+  fi
+}
+trap cluster_info ERR
 
 echo "## wait for sriov operator to be ready"
 hack/deploy-wait.sh
@@ -295,17 +464,5 @@ if [ -z $SKIP_TEST ]; then
     export JUNIT_OUTPUT="${root}/${TEST_REPORT_PATH}/conformance-test-report"
   fi
 
-  # Disable exit on error temporarily to gather cluster information
-  set +e
   SUITE=./test/conformance hack/run-e2e-conformance.sh
-  TEST_EXITE_CODE=$?
-  set -e
-
-  if [[ -v TEST_REPORT_PATH ]]; then
-    kubectl cluster-info dump --namespaces ${NAMESPACE},${MULTUS_NAMESPACE} --output-directory "${root}/${TEST_REPORT_PATH}/cluster-info"
-  fi
-
-  if [[ $TEST_EXITE_CODE -ne 0 ]]; then
-    exit $TEST_EXITE_CODE
-  fi
 fi

@@ -24,6 +24,11 @@ type NetlinkLib interface {
 	LinkSetVfPortGUID(link Link, vf int, portguid net.HardwareAddr) error
 	// LinkByName finds a link by name and returns a pointer to the object.
 	LinkByName(name string) (Link, error)
+	// LinkByIndex finds a link by index and returns a pointer to the object.
+	LinkByIndex(index int) (Link, error)
+	// LinkList gets a list of link devices.
+	// Equivalent to: `ip link show`
+	LinkList() ([]Link, error)
 	// LinkSetVfHardwareAddr sets the hardware address of a vf for the link.
 	// Equivalent to: `ip link set $link vf $vf mac $hwaddr`
 	LinkSetVfHardwareAddr(link Link, vf int, hwaddr net.HardwareAddr) error
@@ -58,6 +63,15 @@ type NetlinkLib interface {
 	// cmode argument should contain valid cmode value as uint8, modes are define in nl.DEVLINK_PARAM_CMODE_* constants
 	// value argument should have one of the following types: uint8, uint16, uint32, string, bool
 	DevlinkSetDeviceParam(bus string, device string, param string, cmode uint8, value interface{}) error
+	// RdmaLinkByName finds a link by name and returns a pointer to the object if
+	// found and nil error, otherwise returns error code.
+	RdmaLinkByName(name string) (*netlink.RdmaLink, error)
+	// IsLinkAdminStateUp checks if the admin state of a link is up
+	IsLinkAdminStateUp(link Link) bool
+	// RdmaSystemGetNetnsMode returns RDMA subsystem mode
+	RdmaSystemGetNetnsMode() (string, error)
+	// GetAltNames returns a list of alternative names for a link
+	GetAltNames(name string) ([]string, error)
 }
 
 type libWrapper struct{}
@@ -74,9 +88,31 @@ func (w *libWrapper) LinkSetVfPortGUID(link Link, vf int, portguid net.HardwareA
 	return netlink.LinkSetVfPortGUID(link, vf, portguid)
 }
 
-// LinkByName finds a link by name and returns a pointer to the object.// LinkByName finds a link by name and returns a pointer to the object.
+// LinkByName finds a link by name and returns a pointer to the object.
 func (w *libWrapper) LinkByName(name string) (Link, error) {
 	return netlink.LinkByName(name)
+}
+
+// LinkByIndex finds a link by index and returns a pointer to the object.
+func (w *libWrapper) LinkByIndex(index int) (Link, error) {
+	return netlink.LinkByIndex(index)
+}
+
+// LinkList gets a list of link devices.
+// Equivalent to: `ip link show`
+func (w *libWrapper) LinkList() ([]Link, error) {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert each netlink.Link to the custom Link interface
+	customLinks := make([]Link, len(links))
+	for i, link := range links {
+		customLinks[i] = link
+	}
+
+	return customLinks, nil
 }
 
 // LinkSetVfHardwareAddr sets the hardware address of a vf for the link.
@@ -141,4 +177,34 @@ func (w *libWrapper) DevlinkGetDeviceParamByName(bus string, device string, para
 // value argument should have one of the following types: uint8, uint16, uint32, string, bool
 func (w *libWrapper) DevlinkSetDeviceParam(bus string, device string, param string, cmode uint8, value interface{}) error {
 	return netlink.DevlinkSetDeviceParam(bus, device, param, cmode, value)
+}
+
+// RdmaLinkByName finds a link by name and returns a pointer to the object if
+// found and nil error, otherwise returns error code.
+func (w *libWrapper) RdmaLinkByName(name string) (*netlink.RdmaLink, error) {
+	return netlink.RdmaLinkByName(name)
+}
+
+// IsLinkAdminStateUp checks if the admin state of a link is up
+func (w *libWrapper) IsLinkAdminStateUp(link Link) bool {
+	return link.Attrs().Flags&net.FlagUp == 1
+}
+
+// RdmaSystemGetNetnsMode returns RDMA subsystem mode
+func (w *libWrapper) RdmaSystemGetNetnsMode() (string, error) {
+	return netlink.RdmaSystemGetNetnsMode()
+}
+
+// GetAltNames returns a list of alternative names for a link
+func (w *libWrapper) GetAltNames(name string) ([]string, error) {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return nil, err
+	}
+	// The AltNames field was added in netlink LinkAttrs struct
+	attrs := link.Attrs()
+	if attrs == nil || len(attrs.AltNames) == 0 {
+		return []string{}, nil
+	}
+	return attrs.AltNames, nil
 }

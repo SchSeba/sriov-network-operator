@@ -24,12 +24,17 @@ import (
 	"os"
 	"strings"
 
+	errs "github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -38,16 +43,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
-	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/apply"
 	constants "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/featuregate"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/render"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 )
 
-var webhooks = map[string](string){
-	constants.InjectorWebHookName: constants.InjectorWebHookPath,
-	constants.OperatorWebHookName: constants.OperatorWebHookPath,
-}
+var (
+	webhooks = map[string]string{
+		constants.InjectorWebHookName: constants.InjectorWebHookPath,
+		constants.OperatorWebHookName: constants.OperatorWebHookPath,
+	}
+	oneNode           = intstr.FromInt32(1)
+	defaultPoolConfig = &sriovnetworkv1.SriovNetworkPoolConfig{Spec: sriovnetworkv1.SriovNetworkPoolConfigSpec{
+		MaxUnavailable: &oneNode,
+		NodeSelector:   &metav1.LabelSelector{},
+		RdmaMode:       ""}}
+)
 
 const (
 	clusterRoleResourceName               = "ClusterRole"
@@ -88,26 +100,18 @@ func (DrainAnnotationPredicate) Update(e event.UpdateEvent) bool {
 		return true
 	}
 
-	if oldAnno != newAnno {
-		return true
-	}
-
-	return false
+	return oldAnno != newAnno
 }
 
 type DrainStateAnnotationPredicate struct {
 	predicate.Funcs
 }
 
-func (DrainStateAnnotationPredicate) Create(e event.CreateEvent) bool {
-	if e.Object == nil {
-		return false
-	}
+type renderManifestFunc func(string, *render.RenderData) ([]*uns.Unstructured, error)
+type applyManifestFunc func(context.Context, k8sclient.Client, *uns.Unstructured) error
 
-	if _, hasAnno := e.Object.GetLabels()[constants.NodeStateDrainAnnotationCurrent]; hasAnno {
-		return true
-	}
-	return false
+func (DrainStateAnnotationPredicate) Create(e event.CreateEvent) bool {
+	return e.Object != nil
 }
 
 func (DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
@@ -118,14 +122,10 @@ func (DrainStateAnnotationPredicate) Update(e event.UpdateEvent) bool {
 		return false
 	}
 
-	oldAnno, hasOldAnno := e.ObjectOld.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
-	newAnno, hasNewAnno := e.ObjectNew.GetLabels()[constants.NodeStateDrainAnnotationCurrent]
+	oldAnno, hasOldAnno := e.ObjectOld.GetAnnotations()[constants.NodeStateDrainAnnotationCurrent]
+	newAnno, hasNewAnno := e.ObjectNew.GetAnnotations()[constants.NodeStateDrainAnnotationCurrent]
 
 	if !hasOldAnno || !hasNewAnno {
-		return true
-	}
-
-	if oldAnno != newAnno {
 		return true
 	}
 
@@ -149,29 +149,36 @@ func formatJSON(str string) (string, error) {
 	return prettyJSON.String(), nil
 }
 
+// GetDefaultNodeSelector return a nodeSelector with worker and linux os
 func GetDefaultNodeSelector() map[string]string {
-	return map[string]string{"node-role.kubernetes.io/worker": "",
-		"kubernetes.io/os": "linux"}
+	return map[string]string{
+		"node-role.kubernetes.io/worker": "",
+		"kubernetes.io/os":               "linux",
+	}
 }
 
-// hasNoValidPolicy returns true if no SriovNetworkNodePolicy
-// or only the (deprecated) "default" policy is present
-func hasNoValidPolicy(pl []sriovnetworkv1.SriovNetworkNodePolicy) bool {
-	switch len(pl) {
-	case 0:
-		return true
-	case 1:
-		return pl[0].Name == constants.DefaultPolicyName
-	default:
-		return false
+// GetDefaultNodeSelectorForDevicePlugin return a nodeSelector with worker linux os
+// and the enabled sriov device plugin
+func GetNodeSelectorForDevicePlugin(dc *sriovnetworkv1.SriovOperatorConfig) map[string]string {
+	if len(dc.Spec.ConfigDaemonNodeSelector) == 0 {
+		return map[string]string{
+			"kubernetes.io/os":               "linux",
+			constants.SriovDevicePluginLabel: constants.SriovDevicePluginLabelEnabled,
+		}
 	}
+
+	tmp := dc.Spec.DeepCopy()
+	tmp.ConfigDaemonNodeSelector[constants.SriovDevicePluginLabel] = constants.SriovDevicePluginLabelEnabled
+	return tmp.ConfigDaemonNodeSelector
 }
 
 func syncPluginDaemonObjs(ctx context.Context,
 	client k8sclient.Client,
 	scheme *runtime.Scheme,
 	dc *sriovnetworkv1.SriovOperatorConfig,
-	pl *sriovnetworkv1.SriovNetworkNodePolicyList) error {
+	featureGate featuregate.FeatureGate,
+	renderFn renderManifestFunc,
+	applyFn applyManifestFunc) error {
 	logger := log.Log.WithName("syncPluginDaemonObjs")
 	logger.V(1).Info("Start to sync sriov daemons objects")
 
@@ -179,45 +186,22 @@ func syncPluginDaemonObjs(ctx context.Context,
 	data := render.MakeRenderData()
 	data.Data["Namespace"] = vars.Namespace
 	data.Data["SRIOVDevicePluginImage"] = os.Getenv("SRIOV_DEVICE_PLUGIN_IMAGE")
+	data.Data["SRIOVNetworkConfigDaemonImage"] = os.Getenv("SRIOV_NETWORK_CONFIG_DAEMON_IMAGE")
 	data.Data["ReleaseVersion"] = os.Getenv("RELEASEVERSION")
 	data.Data["ResourcePrefix"] = vars.ResourcePrefix
 	data.Data["ImagePullSecrets"] = GetImagePullSecrets()
-	data.Data["NodeSelectorField"] = GetDefaultNodeSelector()
+	data.Data["NodeSelectorField"] = GetNodeSelectorForDevicePlugin(dc)
 	data.Data["UseCDI"] = dc.Spec.UseCDI
-	objs, err := renderDsForCR(constants.PluginPath, &data)
+	data.Data["BlockDevicePluginUntilConfigured"] = featureGate.IsEnabled(constants.BlockDevicePluginUntilConfiguredFeatureGate)
+	objs, err := renderDsForCR(constants.PluginPath, &data, renderFn)
 	if err != nil {
 		logger.Error(err, "Fail to render SR-IoV manifests")
 		return err
 	}
 
-	if hasNoValidPolicy(pl.Items) {
-		for _, obj := range objs {
-			err := deleteK8sResource(ctx, client, obj)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	// Sync DaemonSets
 	for _, obj := range objs {
-		if obj.GetKind() == constants.DaemonSet && len(dc.Spec.ConfigDaemonNodeSelector) > 0 {
-			scheme := kscheme.Scheme
-			ds := &appsv1.DaemonSet{}
-			err = scheme.Convert(obj, ds, nil)
-			if err != nil {
-				logger.Error(err, "Fail to convert to DaemonSet")
-				return err
-			}
-			ds.Spec.Template.Spec.NodeSelector = dc.Spec.ConfigDaemonNodeSelector
-			err = scheme.Convert(ds, obj, nil)
-			if err != nil {
-				logger.Error(err, "Fail to convert to Unstructured")
-				return err
-			}
-		}
-		err = syncDsObject(ctx, client, scheme, dc, pl, obj)
+		err = syncDsObject(ctx, client, scheme, dc, obj, applyFn)
 		if err != nil {
 			logger.Error(err, "Couldn't sync SR-IoV daemons objects")
 			return err
@@ -227,14 +211,7 @@ func syncPluginDaemonObjs(ctx context.Context,
 	return nil
 }
 
-func deleteK8sResource(ctx context.Context, client k8sclient.Client, in *uns.Unstructured) error {
-	if err := apply.DeleteObject(ctx, client, in); err != nil {
-		return fmt.Errorf("failed to delete object %v with err: %v", in, err)
-	}
-	return nil
-}
-
-func syncDsObject(ctx context.Context, client k8sclient.Client, scheme *runtime.Scheme, dc *sriovnetworkv1.SriovOperatorConfig, pl *sriovnetworkv1.SriovNetworkNodePolicyList, obj *uns.Unstructured) error {
+func syncDsObject(ctx context.Context, client k8sclient.Client, scheme *runtime.Scheme, dc *sriovnetworkv1.SriovOperatorConfig, obj *uns.Unstructured, applyFn applyManifestFunc) error {
 	logger := log.Log.WithName("syncDsObject")
 	kind := obj.GetKind()
 	logger.V(1).Info("Start to sync Objects", "Kind", kind)
@@ -243,7 +220,7 @@ func syncDsObject(ctx context.Context, client k8sclient.Client, scheme *runtime.
 		if err := controllerutil.SetControllerReference(dc, obj, scheme); err != nil {
 			return err
 		}
-		if err := apply.ApplyObject(ctx, client, obj); err != nil {
+		if err := applyFn(ctx, client, obj); err != nil {
 			logger.Error(err, "Fail to sync", "Kind", kind)
 			return err
 		}
@@ -254,7 +231,7 @@ func syncDsObject(ctx context.Context, client k8sclient.Client, scheme *runtime.
 			logger.Error(err, "Fail to convert to DaemonSet")
 			return err
 		}
-		err = syncDaemonSet(ctx, client, scheme, dc, pl, ds)
+		err = syncDaemonSet(ctx, client, scheme, dc, ds)
 		if err != nil {
 			logger.Error(err, "Fail to sync DaemonSet", "Namespace", ds.Namespace, "Name", ds.Name)
 			return err
@@ -263,16 +240,23 @@ func syncDsObject(ctx context.Context, client k8sclient.Client, scheme *runtime.
 	return nil
 }
 
-func syncDaemonSet(ctx context.Context, client k8sclient.Client, scheme *runtime.Scheme, dc *sriovnetworkv1.SriovOperatorConfig, pl *sriovnetworkv1.SriovNetworkNodePolicyList, in *appsv1.DaemonSet) error {
+// renderDsForCR renders daemon objects using the provided renderer.
+func renderDsForCR(path string, data *render.RenderData, renderFn renderManifestFunc) ([]*uns.Unstructured, error) {
+	logger := log.Log.WithName("renderDsForCR")
+	logger.V(1).Info("Start to render objects")
+
+	objs, err := renderFn(path, data)
+	if err != nil {
+		return nil, errs.Wrap(err, "failed to render SR-IOV Network Operator manifests")
+	}
+	return objs, nil
+}
+
+func syncDaemonSet(ctx context.Context, client k8sclient.Client, scheme *runtime.Scheme, dc *sriovnetworkv1.SriovOperatorConfig, in *appsv1.DaemonSet) error {
 	logger := log.Log.WithName("syncDaemonSet")
 	logger.V(1).Info("Start to sync DaemonSet", "Namespace", in.Namespace, "Name", in.Name)
 	var err error
 
-	if pl != nil {
-		if err = setDsNodeAffinity(pl, in); err != nil {
-			return err
-		}
-	}
 	if err = controllerutil.SetControllerReference(dc, in, scheme); err != nil {
 		return err
 	}
@@ -302,17 +286,8 @@ func syncDaemonSet(ctx context.Context, client k8sclient.Client, scheme *runtime
 
 		if equality.Semantic.DeepEqual(in.OwnerReferences, ds.OwnerReferences) &&
 			equality.Semantic.DeepDerivative(in.Spec, ds.Spec) {
-			// DeepDerivative has issue detecting nodeAffinity change
-			// https://bugzilla.redhat.com/show_bug.cgi?id=1914066
-			// DeepDerivative doesn't detect changes in containers args section
-			// This code should be fixed both with NodeAffinity comparation
-			if equality.Semantic.DeepEqual(in.Spec.Template.Spec.Affinity.NodeAffinity,
-				ds.Spec.Template.Spec.Affinity.NodeAffinity) &&
-				equality.Semantic.DeepEqual(in.Spec.Template.Spec.Containers[0].Args,
-					ds.Spec.Template.Spec.Containers[0].Args) {
-				logger.V(1).Info("Daemonset spec did not change, not updating")
-				return nil
-			}
+			logger.V(1).Info("Daemonset spec did not change, not updating")
+			return nil
 		}
 		err = client.Update(ctx, in)
 		if err != nil {
@@ -321,4 +296,116 @@ func syncDaemonSet(ctx context.Context, client k8sclient.Client, scheme *runtime
 		}
 	}
 	return nil
+}
+
+func updateDaemonsetNodeSelector(obj *uns.Unstructured, nodeSelector map[string]string) error {
+	if len(nodeSelector) == 0 {
+		return nil
+	}
+
+	ds := &appsv1.DaemonSet{}
+	scheme := kscheme.Scheme
+	err := scheme.Convert(obj, ds, nil)
+	if err != nil {
+		return fmt.Errorf("failed to convert Unstructured [%s] to DaemonSet: %v", obj.GetName(), err)
+	}
+
+	ds.Spec.Template.Spec.NodeSelector = nodeSelector
+
+	err = scheme.Convert(ds, obj, nil)
+	if err != nil {
+		return fmt.Errorf("failed to convert DaemonSet [%s] to Unstructured: %v", obj.GetName(), err)
+	}
+	return nil
+}
+
+func findNodePoolConfig(ctx context.Context, node *corev1.Node, c k8sclient.Client) (*sriovnetworkv1.SriovNetworkPoolConfig, []corev1.Node, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("FindNodePoolConfig():")
+	// get all the sriov network pool configs
+	npcl := &sriovnetworkv1.SriovNetworkPoolConfigList{}
+	err := c.List(ctx, npcl)
+	if err != nil {
+		logger.Error(err, "failed to list sriovNetworkPoolConfig")
+		return nil, nil, err
+	}
+
+	selectedNpcl := []*sriovnetworkv1.SriovNetworkPoolConfig{}
+	nodesInPools := map[string]interface{}{}
+
+	for _, npc := range npcl.Items {
+		// we skip hw offload objects
+		if npc.Spec.OvsHardwareOffloadConfig.Name != "" {
+			continue
+		}
+
+		if npc.Spec.NodeSelector == nil {
+			npc.Spec.NodeSelector = &metav1.LabelSelector{}
+		}
+
+		selector, err := metav1.LabelSelectorAsSelector(npc.Spec.NodeSelector)
+		if err != nil {
+			logger.Error(err, "failed to create label selector from nodeSelector", "nodeSelector", npc.Spec.NodeSelector)
+			return nil, nil, err
+		}
+
+		if selector.Matches(labels.Set(node.Labels)) {
+			selectedNpcl = append(selectedNpcl, npc.DeepCopy())
+		}
+
+		nodeList := &corev1.NodeList{}
+		err = c.List(ctx, nodeList, &k8sclient.ListOptions{LabelSelector: selector})
+		if err != nil {
+			logger.Error(err, "failed to list all the nodes matching the pool with label selector from nodeSelector",
+				"machineConfigPoolName", npc,
+				"nodeSelector", npc.Spec.NodeSelector)
+			return nil, nil, err
+		}
+
+		for _, nodeName := range nodeList.Items {
+			nodesInPools[nodeName.Name] = nil
+		}
+	}
+
+	if len(selectedNpcl) > 1 {
+		// don't allow the node to be part of multiple pools
+		err = fmt.Errorf("node is part of more then one pool")
+		logger.Error(err, "multiple pools founded for a specific node", "numberOfPools", len(selectedNpcl), "pools", selectedNpcl)
+		return nil, nil, err
+	} else if len(selectedNpcl) == 1 {
+		// found one pool for our node
+		logger.V(2).Info("found sriovNetworkPool", "pool", *selectedNpcl[0])
+		selector, err := metav1.LabelSelectorAsSelector(selectedNpcl[0].Spec.NodeSelector)
+		if err != nil {
+			logger.Error(err, "failed to create label selector from nodeSelector", "nodeSelector", selectedNpcl[0].Spec.NodeSelector)
+			return nil, nil, err
+		}
+
+		// list all the nodes that are also part of this pool and return them
+		nodeList := &corev1.NodeList{}
+		err = c.List(ctx, nodeList, &k8sclient.ListOptions{LabelSelector: selector})
+		if err != nil {
+			logger.Error(err, "failed to list nodes using with label selector", "labelSelector", selector)
+			return nil, nil, err
+		}
+
+		return selectedNpcl[0], nodeList.Items, nil
+	} else {
+		// in this case we get all the nodes and remove the ones that already part of any pool
+		logger.V(1).Info("node doesn't belong to any pool, using default drain configuration with MaxUnavailable of one", "pool", *defaultPoolConfig)
+		nodeList := &corev1.NodeList{}
+		err = c.List(ctx, nodeList)
+		if err != nil {
+			logger.Error(err, "failed to list all the nodes")
+			return nil, nil, err
+		}
+
+		defaultNodeLists := []corev1.Node{}
+		for _, nodeObj := range nodeList.Items {
+			if _, exist := nodesInPools[nodeObj.Name]; !exist {
+				defaultNodeLists = append(defaultNodeLists, nodeObj)
+			}
+		}
+		return defaultPoolConfig, defaultNodeLists, nil
+	}
 }
