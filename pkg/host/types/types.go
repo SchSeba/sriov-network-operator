@@ -1,7 +1,8 @@
 package types
 
 import (
-	"github.com/coreos/go-systemd/v22/unit"
+	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
 )
 
 // Service contains info about systemd service
@@ -33,11 +34,17 @@ type ScriptManifestFile struct {
 	}
 }
 
-var (
-	// Remove run condition form the service
-	ConditionOpt = &unit.UnitOption{
-		Section: "Unit",
-		Name:    "ConditionPathExists",
-		Value:   "!/etc/ignition-machine-config-encapsulated.json",
-	}
-)
+// SriovConfig: Contains the information we saved on the host for the sriov-config service running on the host
+type SriovConfig struct {
+	Spec                  sriovnetworkv1.SriovNetworkNodeStateSpec `yaml:"spec"`
+	UnsupportedNics       bool                                     `yaml:"unsupportedNics"`
+	PlatformType          consts.PlatformTypes                     `yaml:"platformType"`
+	ManageSoftwareBridges bool                                     `yaml:"manageSoftwareBridges"`
+	OVSDBSocketPath       string                                   `yaml:"ovsdbSocketPath"`
+}
+
+// SriovResult: Contains the result from the sriov-config service trying to apply the requested policies
+type SriovResult struct {
+	SyncStatus    string `yaml:"syncStatus"`
+	LastSyncError string `yaml:"lastSyncError"`
+}

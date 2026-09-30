@@ -1,13 +1,19 @@
 package host
 
 import (
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/bridge"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/cpu"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/infiniband"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/kernel"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/dputils"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/ethtool"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/ghw"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/netlink"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/lib/sriovnet"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/network"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/service"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/sriov"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/systemd"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/udev"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/internal/vdpa"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/host/types"
@@ -24,6 +30,10 @@ type HostManagerInterface interface {
 	types.UdevInterface
 	types.SriovInterface
 	types.VdpaInterface
+	types.InfinibandInterface
+	types.BridgeInterface
+	types.CPUInfoProviderInterface
+	types.SystemdInterface
 }
 
 type hostManager struct {
@@ -34,19 +44,36 @@ type hostManager struct {
 	types.UdevInterface
 	types.SriovInterface
 	types.VdpaInterface
+	types.InfinibandInterface
+	types.BridgeInterface
+	types.CPUInfoProviderInterface
+	types.SystemdInterface
 }
 
-func NewHostManager(utilsInterface utils.CmdInterface) HostManagerInterface {
+func NewDefaultHostManager() (HostManagerInterface, error) {
+	utilsHelper := utils.New()
+	return NewHostManager(utilsHelper)
+}
+
+func NewHostManager(utilsInterface utils.CmdInterface) (HostManagerInterface, error) {
 	dpUtils := dputils.New()
 	netlinkLib := netlink.New()
 	ethtoolLib := ethtool.New()
+	sriovnetLib := sriovnet.New()
+	ghwLib := ghw.New()
 	k := kernel.New(utilsInterface)
 	n := network.New(utilsInterface, dpUtils, netlinkLib, ethtoolLib)
 	sv := service.New(utilsInterface)
 	u := udev.New(utilsInterface)
 	v := vdpa.New(k, netlinkLib)
-	sr := sriov.New(utilsInterface, k, n, u, v, netlinkLib, dpUtils)
-
+	ib, err := infiniband.New(netlinkLib, k, n)
+	if err != nil {
+		return nil, err
+	}
+	br := bridge.New()
+	sr := sriov.New(utilsInterface, k, n, u, v, ib, netlinkLib, dpUtils, sriovnetLib, ghwLib, br)
+	cpuInfoProvider := cpu.New(ghwLib)
+	s := systemd.New()
 	return &hostManager{
 		utilsInterface,
 		k,
@@ -55,5 +82,9 @@ func NewHostManager(utilsInterface utils.CmdInterface) HostManagerInterface {
 		u,
 		sr,
 		v,
-	}
+		ib,
+		br,
+		cpuInfoProvider,
+		s,
+	}, nil
 }
