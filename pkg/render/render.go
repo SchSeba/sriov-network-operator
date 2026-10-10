@@ -16,8 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
-	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
-	"github.com/openshift/machine-config-operator/pkg/controller/common"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 )
 
 type RenderData struct {
@@ -36,9 +35,7 @@ type DeviceInfo struct {
 }
 
 const (
-	filesDir          = "files"
-	ovsUnitsDir       = "ovs-units"
-	switchdevUnitsDir = "switchdev-units"
+	ovsUnitsDir = "ovs-units"
 )
 
 func MakeRenderData() RenderData {
@@ -66,7 +63,7 @@ func RenderDir(manifestDir string, d *RenderData) ([]*unstructured.Unstructured,
 			return nil
 		}
 
-		objs, err := RenderTemplate(path, d)
+		objs, err := RenderFileTemplate(path, d)
 		if err != nil {
 			return err
 		}
@@ -79,10 +76,15 @@ func RenderDir(manifestDir string, d *RenderData) ([]*unstructured.Unstructured,
 	return out, nil
 }
 
-// RenderTemplate reads, renders, and attempts to parse a yaml or
+// RenderTemplate renders provided template to string
+func RenderTemplate(template string, d *RenderData) (*bytes.Buffer, error) {
+	return renderTemplate(template, d)
+}
+
+// RenderFileTemplate reads, renders, and attempts to parse a yaml or
 // json file representing one or more k8s api objects
-func RenderTemplate(path string, d *RenderData) ([]*unstructured.Unstructured, error) {
-	rendered, err := renderTemplate(path, d)
+func RenderFileTemplate(path string, d *RenderData) ([]*unstructured.Unstructured, error) {
+	rendered, err := renderFileTemplate(path, d)
 	if err != nil {
 		return nil, err
 	}
@@ -114,8 +116,8 @@ func RenderTemplate(path string, d *RenderData) ([]*unstructured.Unstructured, e
 	return out, nil
 }
 
-func renderTemplate(path string, d *RenderData) (*bytes.Buffer, error) {
-	tmpl := template.New(path).Option("missingkey=error")
+func renderTemplate(rawTemplate string, d *RenderData) (*bytes.Buffer, error) {
+	tmpl := template.New("template").Option("missingkey=error")
 	if d.Funcs != nil {
 		tmpl.Funcs(d.Funcs)
 	}
@@ -124,21 +126,25 @@ func renderTemplate(path string, d *RenderData) (*bytes.Buffer, error) {
 	tmpl.Funcs(template.FuncMap{"getOr": getOr, "isSet": isSet})
 	tmpl.Funcs(sprig.TxtFuncMap())
 
+	if _, err := tmpl.Parse(rawTemplate); err != nil {
+		return nil, errors.Wrapf(err, "failed to parse manifest %s as template", rawTemplate)
+	}
+
+	rendered := bytes.Buffer{}
+	if err := tmpl.Execute(&rendered, d.Data); err != nil {
+		return nil, errors.Wrapf(err, "failed to render manifest %s", rawTemplate)
+	}
+
+	return &rendered, nil
+}
+
+func renderFileTemplate(path string, d *RenderData) (*bytes.Buffer, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to read manifest %s", path)
 	}
 
-	if _, err := tmpl.Parse(string(source)); err != nil {
-		return nil, errors.Wrapf(err, "failed to parse manifest %s as template", path)
-	}
-
-	rendered := bytes.Buffer{}
-	if err := tmpl.Execute(&rendered, d.Data); err != nil {
-		return nil, errors.Wrapf(err, "failed to render manifest %s", path)
-	}
-
-	return &rendered, nil
+	return renderTemplate(string(source[:]), d)
 }
 
 func formateDeviceList(devs []DeviceInfo) string {
@@ -159,26 +165,10 @@ func GenerateMachineConfig(path, name, mcRole string, ovsOffload bool, d *Render
 	if !exists {
 		return nil, errors.Errorf("%s is not a directory", path)
 	}
-	files := map[string]string{}
 	units := map[string]string{}
 
-	// if err := filterTemplates(files, path, d); err != nil {
-	// 	return nil, err
-	// }
-
-	p := filepath.Join(path, filesDir)
-	exists, err = existsDir(p)
-	if err != nil {
-		return nil, err
-	}
-	if exists {
-		if err := filterTemplates(files, p, d); err != nil {
-			return nil, err
-		}
-	}
-
 	if ovsOffload {
-		p = filepath.Join(path, ovsUnitsDir)
+		p := filepath.Join(path, ovsUnitsDir)
 		exists, err = existsDir(p)
 		if err != nil {
 			return nil, err
@@ -189,18 +179,6 @@ func GenerateMachineConfig(path, name, mcRole string, ovsOffload bool, d *Render
 			}
 		}
 	}
-
-	p = filepath.Join(path, switchdevUnitsDir)
-	exists, err = existsDir(p)
-	if err != nil {
-		return nil, err
-	}
-	if exists {
-		if err := filterTemplates(units, p, d); err != nil {
-			return nil, err
-		}
-	}
-
 	// keySortVals returns a list of values, sorted by key
 	// we need the lists of files and units to have a stable ordering for the checksum
 	keySortVals := func(m map[string]string) []string {
@@ -218,11 +196,11 @@ func GenerateMachineConfig(path, name, mcRole string, ovsOffload bool, d *Render
 		return vs
 	}
 
-	ignCfg, err := common.TranspileCoreOSConfigToIgn(keySortVals(files), keySortVals(units))
+	ignCfg, err := TranspileCoreOSConfigToIgn(nil, keySortVals(units))
 	if err != nil {
 		return nil, errors.Wrap(err, "error transpiling CoreOS config to Ignition config")
 	}
-	mcfg, err := common.MachineConfigFromIgnConfig(mcRole, name, ignCfg)
+	mcfg, err := MachineConfigFromIgnConfig(mcRole, name, ignCfg)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating MachineConfig from Ignition config")
 	}
@@ -262,7 +240,7 @@ func filterTemplates(toFilter map[string]string, path string, d *RenderData) err
 		}
 
 		// Render the template file
-		renderedData, err := renderTemplate(path, d)
+		renderedData, err := renderFileTemplate(path, d)
 		if err != nil {
 			return err
 		}
