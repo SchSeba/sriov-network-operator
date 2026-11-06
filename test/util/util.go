@@ -4,16 +4,15 @@ import (
 	goctx "context"
 	"encoding/json"
 	"fmt"
-	"reflect"
-
-	// "strings"
-	// "testing"
 	"time"
 
+	"github.com/google/uuid"
 	dptypes "github.com/k8snetworkplumbingwg/sriov-network-device-plugin/pkg/types"
+
 	// "github.com/operator-framework/operator-sdk/pkg/test/e2eutil"
 	appsv1 "k8s.io/api/apps/v1"
 	// corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,8 +33,8 @@ var (
 
 func WaitForSriovNetworkNodeStateReady(nodeState *sriovnetworkv1.SriovNetworkNodeState, client client.Client, namespace, name string, retryInterval, timeout time.Duration) error {
 	time.Sleep(30 * time.Second)
-	err := wait.PollImmediate(retryInterval, timeout, func() (done bool, err error) {
-		ctx, cancel := goctx.WithTimeout(goctx.Background(), APITimeout)
+	err := wait.PollUntilContextTimeout(goctx.Background(), retryInterval, timeout, true, func(pollCtx goctx.Context) (done bool, err error) {
+		ctx, cancel := goctx.WithTimeout(pollCtx, APITimeout)
 		defer cancel()
 		err = client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, nodeState)
 		if err != nil {
@@ -58,8 +57,8 @@ func WaitForSriovNetworkNodeStateReady(nodeState *sriovnetworkv1.SriovNetworkNod
 }
 
 func WaitForDaemonSetReady(ds *appsv1.DaemonSet, client client.Client, namespace, name string, retryInterval, timeout time.Duration) error {
-	err := wait.PollImmediate(retryInterval, timeout, func() (done bool, err error) {
-		ctx, cancel := goctx.WithTimeout(goctx.Background(), APITimeout)
+	err := wait.PollUntilContextTimeout(goctx.Background(), retryInterval, timeout, true, func(pollCtx goctx.Context) (done bool, err error) {
+		ctx, cancel := goctx.WithTimeout(pollCtx, APITimeout)
 		defer cancel()
 		err = client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ds)
 		if err != nil {
@@ -83,8 +82,8 @@ func WaitForDaemonSetReady(ds *appsv1.DaemonSet, client client.Client, namespace
 }
 
 func WaitForNamespacedObject(obj client.Object, client client.Client, namespace, name string, retryInterval, timeout time.Duration) error {
-	err := wait.PollImmediate(retryInterval, timeout, func() (done bool, err error) {
-		ctx, cancel := goctx.WithTimeout(goctx.Background(), APITimeout)
+	err := wait.PollUntilContextTimeout(goctx.Background(), retryInterval, timeout, true, func(pollCtx goctx.Context) (done bool, err error) {
+		ctx, cancel := goctx.WithTimeout(pollCtx, APITimeout)
 		defer cancel()
 		err = client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj)
 		if err != nil {
@@ -104,8 +103,8 @@ func WaitForNamespacedObject(obj client.Object, client client.Client, namespace,
 }
 
 func WaitForNamespacedObjectDeleted(obj client.Object, client client.Client, namespace, name string, retryInterval, timeout time.Duration) error {
-	err := wait.PollImmediate(retryInterval, timeout, func() (done bool, err error) {
-		ctx, cancel := goctx.WithTimeout(goctx.Background(), APITimeout)
+	err := wait.PollUntilContextTimeout(goctx.Background(), retryInterval, timeout, true, func(pollCtx goctx.Context) (done bool, err error) {
+		ctx, cancel := goctx.WithTimeout(pollCtx, APITimeout)
 		defer cancel()
 		err = client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj)
 		if err != nil {
@@ -198,6 +197,23 @@ func ValidateDevicePluginConfig(nps []*sriovnetworkv1.SriovNetworkNodePolicy, ra
 	return nil
 }
 
+// TriggerSriovOperatorConfigReconcile edits a test label of the default SriovOperatorConfig object to
+// trigger the reconciliation logic of the controller.
+func TriggerSriovOperatorConfigReconcile(client client.Client, operatorNamespace string) error {
+	config := &sriovnetworkv1.SriovOperatorConfig{}
+	err := client.Get(goctx.Background(), types.NamespacedName{Name: "default", Namespace: operatorNamespace}, config)
+	if err != nil {
+		return err
+	}
+
+	if config.ObjectMeta.Labels == nil {
+		config.ObjectMeta.Labels = make(map[string]string)
+	}
+
+	config.ObjectMeta.Labels["trigger-test"] = uuid.NewString()
+	return client.Update(goctx.Background(), config)
+}
+
 func validateSelector(rc *dptypes.NetDeviceSelectors, ns *sriovnetworkv1.SriovNetworkNicSelector) bool {
 	if ns.DeviceID != "" {
 		if len(rc.Devices) != 1 || ns.DeviceID != rc.Devices[0] {
@@ -210,7 +226,7 @@ func validateSelector(rc *dptypes.NetDeviceSelectors, ns *sriovnetworkv1.SriovNe
 		}
 	}
 	if len(ns.PfNames) > 0 {
-		if !reflect.DeepEqual(ns.PfNames, rc.PfNames) {
+		if !equality.Semantic.DeepEqual(ns.PfNames, rc.PfNames) {
 			return false
 		}
 	}

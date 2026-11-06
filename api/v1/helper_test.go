@@ -10,7 +10,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 
 	v1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
@@ -149,6 +153,8 @@ func TestRendering(t *testing.T) {
 		{
 			tname: "simple",
 			network: v1.SriovNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "SriovNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
 				Spec: v1.SriovNetworkSpec{
 					NetworkNamespace: "testnamespace",
 					ResourceName:     "testresource",
@@ -158,6 +164,8 @@ func TestRendering(t *testing.T) {
 		{
 			tname: "chained",
 			network: v1.SriovNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "SriovNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
 				Spec: v1.SriovNetworkSpec{
 					NetworkNamespace: "testnamespace",
 					ResourceName:     "testresource",
@@ -194,10 +202,8 @@ func TestRendering(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed reading .golden: %s", err)
 			}
-			t.Log(b.String())
-			if !bytes.Equal(b.Bytes(), g) {
-				t.Errorf("bytes do not match .golden file")
-			}
+
+			assert.Equal(t, string(g), b.String(), "bytes do not match .golden file [%s]", gp)
 		})
 	}
 }
@@ -210,6 +216,8 @@ func TestIBRendering(t *testing.T) {
 		{
 			tname: "simpleib",
 			network: v1.SriovIBNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "SriovIBNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
 				Spec: v1.SriovIBNetworkSpec{
 					NetworkNamespace: "testnamespace",
 					ResourceName:     "testresource",
@@ -241,10 +249,96 @@ func TestIBRendering(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed reading .golden: %s", err)
 			}
-			t.Log(b.String())
-			if !bytes.Equal(b.Bytes(), g) {
-				t.Errorf("bytes do not match .golden file")
+
+			assert.Equal(t, string(g), b.String(), "bytes do not match .golden file [%s]", gp)
+		})
+	}
+}
+
+func TestOVSRendering(t *testing.T) {
+	testtable := []struct {
+		tname   string
+		network v1.OVSNetwork
+	}{
+		{
+			tname: "simpleovs",
+			network: v1.OVSNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "OVSNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
+				Spec: v1.OVSNetworkSpec{
+					NetworkNamespace: "testnamespace",
+					ResourceName:     "testresource",
+				},
+			},
+		},
+		{
+			tname: "chained",
+			network: v1.OVSNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "OVSNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
+				Spec: v1.OVSNetworkSpec{
+					NetworkNamespace: "testnamespace",
+					ResourceName:     "testresource",
+					MTU:              1500,
+					MetaPluginsConfig: `
+					{
+						"type": "vrf",
+						"vrfname": "blue"
+					}
+					`,
+				},
+			},
+		},
+		{
+			tname: "complexconf",
+			network: v1.OVSNetwork{
+				TypeMeta:   metav1.TypeMeta{APIVersion: v1.GroupVersion.String(), Kind: "OVSNetwork"},
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "test"},
+				Spec: v1.OVSNetworkSpec{
+					NetworkNamespace: "testnamespace",
+					ResourceName:     "testresource",
+					Capabilities:     `{"foo": "bar"}`,
+					Bridge:           "test",
+					Vlan:             100,
+					MTU:              1500,
+					Trunk: []*v1.TrunkConfig{
+						{
+							ID: func(i uint) *uint { return &i }(120)},
+						{
+							MinID: func(i uint) *uint { return &i }(500),
+							MaxID: func(i uint) *uint { return &i }(550)},
+					},
+					InterfaceType: "netdev",
+					IPAM:          `{"type": "foo"}`,
+				},
+			},
+		},
+	}
+	for _, tc := range testtable {
+		t.Run(tc.tname, func(t *testing.T) {
+			var b bytes.Buffer
+			w := bufio.NewWriter(&b)
+			rendered, err := tc.network.RenderNetAttDef()
+			if err != nil {
+				t.Fatal("failed rendering network attachment definition", err)
 			}
+			encoder := json.NewEncoder(w)
+			encoder.SetIndent("", "  ")
+			encoder.Encode(rendered)
+			w.Flush()
+			gp := filepath.Join("testdata", filepath.FromSlash(t.Name())+".golden")
+			if *update {
+				t.Log("update golden file")
+				if err := os.WriteFile(gp, b.Bytes(), 0644); err != nil {
+					t.Fatalf("failed to update golden file: %s", err)
+				}
+			}
+			g, err := os.ReadFile(gp)
+			if err != nil {
+				t.Fatalf("failed reading .golden: %s", err)
+			}
+
+			assert.Equal(t, string(g), b.String(), "bytes do not match .golden file [%s]", gp)
 		})
 	}
 }
@@ -873,6 +967,7 @@ func TestSriovNetworkPoolConfig_MaxUnavailable(t *testing.T) {
 		tname       string
 		maxUn       intstrutil.IntOrString
 		maxUnNil    bool
+		ovsConfig   *v1.OvsHardwareOffloadConfig
 		numOfNodes  int
 		expectedNum int
 		expectedErr bool
@@ -928,6 +1023,27 @@ func TestSriovNetworkPoolConfig_MaxUnavailable(t *testing.T) {
 			expectedErr: false,
 		},
 		{
+			tname:       "named offload pool keeps default drain limit",
+			maxUnNil:    true,
+			ovsConfig:   &v1.OvsHardwareOffloadConfig{Name: "infra"},
+			numOfNodes:  10,
+			expectedNum: 1,
+		},
+		{
+			tname:       "unnamed offload config keeps unlimited drain behavior",
+			maxUnNil:    true,
+			ovsConfig:   &v1.OvsHardwareOffloadConfig{},
+			numOfNodes:  10,
+			expectedNum: -1,
+		},
+		{
+			tname:       "explicit MaxUnavailable takes precedence",
+			maxUn:       intstrutil.FromInt32(2),
+			ovsConfig:   &v1.OvsHardwareOffloadConfig{Name: "infra"},
+			numOfNodes:  10,
+			expectedNum: 2,
+		},
+		{
 			tname:       "zero",
 			maxUn:       intstrutil.FromString("30%"),
 			maxUnNil:    false,
@@ -940,7 +1056,8 @@ func TestSriovNetworkPoolConfig_MaxUnavailable(t *testing.T) {
 		t.Run(tc.tname, func(t *testing.T) {
 			pool := v1.SriovNetworkPoolConfig{
 				Spec: v1.SriovNetworkPoolConfigSpec{
-					MaxUnavailable: &tc.maxUn,
+					MaxUnavailable:           &tc.maxUn,
+					OvsHardwareOffloadConfig: tc.ovsConfig,
 				},
 			}
 
@@ -958,6 +1075,792 @@ func TestSriovNetworkPoolConfig_MaxUnavailable(t *testing.T) {
 			if tc.expectedNum != num {
 				t.Errorf("unexpected number of MaxUnavailable.")
 			}
+		})
+	}
+}
+
+func TestNeedToUpdateSriov(t *testing.T) {
+	type args struct {
+		ifaceSpec   *v1.Interface
+		ifaceStatus *v1.InterfaceExt
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{
+		{
+			name: "number of VFs changed",
+			args: args{
+				ifaceSpec:   &v1.Interface{NumVfs: 1},
+				ifaceStatus: &v1.InterfaceExt{NumVfs: 0},
+			},
+			want: true,
+		},
+		{
+			name: "no update",
+			args: args{
+				ifaceSpec:   &v1.Interface{NumVfs: 1},
+				ifaceStatus: &v1.InterfaceExt{NumVfs: 1},
+			},
+			want: false,
+		},
+		{
+			name: "vfio-pci VF is not configured for any group",
+			args: args{
+				ifaceSpec: &v1.Interface{
+					NumVfs: 3,
+					VfGroups: []v1.VfGroup{
+						{
+							VfRange:    "1-2",
+							DeviceType: consts.DeviceTypeNetDevice,
+						},
+					},
+				},
+				ifaceStatus: &v1.InterfaceExt{
+					NumVfs: 3,
+					VFs: []v1.VirtualFunction{
+						{
+							VfID:   0,
+							Driver: "vfio-pci",
+						},
+						{
+							VfID:   1,
+							Driver: "iavf",
+						},
+						{
+							VfID:   2,
+							Driver: "iavf",
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "driverless VF needs update",
+			args: args{
+				ifaceSpec: &v1.Interface{
+					NumVfs: 1,
+					VfGroups: []v1.VfGroup{
+						{
+							VfRange:    "0-0",
+							DeviceType: consts.DeviceTypeNetDevice,
+						},
+					},
+				},
+				ifaceStatus: &v1.InterfaceExt{
+					NumVfs: 1,
+					VFs: []v1.VirtualFunction{
+						{
+							VfID:   0,
+							Driver: "",
+						},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := v1.NeedToUpdateSriov(tt.args.ifaceSpec, tt.args.ifaceStatus); got != tt.want {
+				t.Errorf("NeedToUpdateSriov() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSriovNetworkNodePolicyApplyBridgeConfig(t *testing.T) {
+	testtable := []struct {
+		tname           string
+		currentState    *v1.SriovNetworkNodeState
+		policy          *v1.SriovNetworkNodePolicy
+		expectedBridges v1.Bridges
+		expectedErr     bool
+	}{
+		{
+			tname:        "no selectors",
+			currentState: newNodeState(),
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType:  consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					ResourceName: "p1res",
+					Bridge:       v1.Bridge{OVS: &v1.OVSConfig{}},
+				},
+			},
+			expectedBridges: v1.Bridges{},
+		},
+		{
+			tname:        "not switchdev config",
+			currentState: newNodeState(),
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "legacy",
+					ResourceName: "p1res",
+					Bridge:       v1.Bridge{OVS: &v1.OVSConfig{}},
+				},
+			},
+			expectedBridges: v1.Bridges{},
+			expectedErr:     true,
+		},
+		{
+			tname:        "bad linkType",
+			currentState: newNodeState(),
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					LinkType:     "ib",
+					ResourceName: "p1res",
+					Bridge:       v1.Bridge{OVS: &v1.OVSConfig{}},
+				},
+			},
+			expectedBridges: v1.Bridges{},
+			expectedErr:     true,
+		},
+		{
+			tname:        "externally managed",
+			currentState: newNodeState(),
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:            2,
+					Priority:          99,
+					EswitchMode:       "switchdev",
+					ExternallyManaged: true,
+					ResourceName:      "p1res",
+					Bridge:            v1.Bridge{OVS: &v1.OVSConfig{}},
+				},
+			},
+			expectedBridges: v1.Bridges{},
+			expectedErr:     true,
+		},
+		{
+			tname:        "single policy multi match",
+			currentState: newNodeState(),
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0", "0000:86:00.2"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					ResourceName: "p1res",
+					Bridge: v1.Bridge{OVS: &v1.OVSConfig{
+						Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+						Uplink: v1.OVSUplinkConfig{
+							Interface: v1.OVSInterfaceConfig{
+								Type: "test",
+							}},
+					}},
+				},
+			},
+			expectedBridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+				{
+					Name:   "br-0000_86_00.0",
+					Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+					Uplinks: []v1.OVSUplinkConfigExt{{
+						Name:       "ens803f0",
+						PciAddress: "0000:86:00.0",
+						Interface:  v1.OVSInterfaceConfig{Type: "test"},
+					}},
+				},
+				{
+					Name:   "br-0000_86_00.2",
+					Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+					Uplinks: []v1.OVSUplinkConfigExt{{
+						Name:       "ens803f2",
+						PciAddress: "0000:86:00.2",
+						Interface:  v1.OVSInterfaceConfig{Type: "test"},
+					}},
+				},
+			}},
+		},
+		{
+			tname: "update bridge set by policy with lover priority",
+			currentState: &v1.SriovNetworkNodeState{
+				Spec: v1.SriovNetworkNodeStateSpec{
+					Bridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+						{
+							Name:   "br-0000_86_00.0",
+							Bridge: v1.OVSBridgeConfig{DatapathType: "foo"},
+							Uplinks: []v1.OVSUplinkConfigExt{{
+								Name:       "ens803f0",
+								PciAddress: "0000:86:00.0",
+								Interface:  v1.OVSInterfaceConfig{Type: "test"},
+							}},
+						},
+					}},
+				},
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{
+							VFs: []v1.VirtualFunction{
+								{},
+							},
+							DeviceID:   "158b",
+							Driver:     "i40e",
+							Mtu:        1500,
+							Name:       "ens803f0",
+							PciAddress: "0000:86:00.0",
+							Vendor:     "8086",
+							NumVfs:     4,
+							TotalVfs:   64,
+						},
+					},
+				}},
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					ResourceName: "p1res",
+					Bridge: v1.Bridge{OVS: &v1.OVSConfig{
+						Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+						Uplink: v1.OVSUplinkConfig{
+							Interface: v1.OVSInterfaceConfig{
+								Type: "test",
+							}},
+					}},
+				},
+			},
+			expectedBridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+				{
+					Name:   "br-0000_86_00.0",
+					Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+					Uplinks: []v1.OVSUplinkConfigExt{{
+						Name:       "ens803f0",
+						PciAddress: "0000:86:00.0",
+						Interface:  v1.OVSInterfaceConfig{Type: "test"},
+					}},
+				},
+			}},
+		},
+		{
+			tname: "remove bridge set by policy with lover priority",
+			currentState: &v1.SriovNetworkNodeState{
+				Spec: v1.SriovNetworkNodeStateSpec{
+					Bridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+						{
+							Name:   "br-0000_86_00.0",
+							Bridge: v1.OVSBridgeConfig{DatapathType: "foo"},
+							Uplinks: []v1.OVSUplinkConfigExt{{
+								Name:       "ens803f0",
+								PciAddress: "0000:86:00.0",
+								Interface:  v1.OVSInterfaceConfig{Type: "test"},
+							}},
+						},
+					}},
+				},
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{
+							VFs: []v1.VirtualFunction{
+								{},
+							},
+							DeviceID:   "158b",
+							Driver:     "i40e",
+							Mtu:        1500,
+							Name:       "ens803f0",
+							PciAddress: "0000:86:00.0",
+							Vendor:     "8086",
+							NumVfs:     4,
+							TotalVfs:   64,
+						},
+					},
+				}},
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					ResourceName: "p1res",
+				},
+			},
+			expectedBridges: v1.Bridges{},
+		},
+		{
+			tname: "keep bridge set by other policy",
+			currentState: &v1.SriovNetworkNodeState{
+				Spec: v1.SriovNetworkNodeStateSpec{
+					Bridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+						{
+							Name:   "br-0000_86_00.2",
+							Bridge: v1.OVSBridgeConfig{DatapathType: "foo"},
+							Uplinks: []v1.OVSUplinkConfigExt{{
+								Name:       "ens803f2",
+								PciAddress: "0000:86:00.2",
+								Interface:  v1.OVSInterfaceConfig{Type: "bar"},
+							}},
+						},
+					},
+					}},
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{
+							VFs: []v1.VirtualFunction{
+								{},
+							},
+							DeviceID:   "158b",
+							Driver:     "i40e",
+							Mtu:        1500,
+							Name:       "ens803f0",
+							PciAddress: "0000:86:00.0",
+							Vendor:     "8086",
+							NumVfs:     4,
+							TotalVfs:   64,
+						},
+					},
+				}},
+			policy: &v1.SriovNetworkNodePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+				Spec: v1.SriovNetworkNodePolicySpec{
+					DeviceType: consts.DeviceTypeNetDevice,
+					NicSelector: v1.SriovNetworkNicSelector{
+						RootDevices: []string{"0000:86:00.0"},
+					},
+					NodeSelector: map[string]string{
+						"feature.node.kubernetes.io/network-sriov.capable": "true",
+					},
+					NumVfs:       2,
+					Priority:     99,
+					EswitchMode:  "switchdev",
+					ResourceName: "p1res",
+					Bridge: v1.Bridge{OVS: &v1.OVSConfig{
+						Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+						Uplink: v1.OVSUplinkConfig{
+							Interface: v1.OVSInterfaceConfig{
+								Type: "test",
+							}},
+					}},
+				},
+			},
+			expectedBridges: v1.Bridges{OVS: []v1.OVSConfigExt{
+				{
+					Name:   "br-0000_86_00.0",
+					Bridge: v1.OVSBridgeConfig{DatapathType: "test"},
+					Uplinks: []v1.OVSUplinkConfigExt{{
+						Name:       "ens803f0",
+						PciAddress: "0000:86:00.0",
+						Interface:  v1.OVSInterfaceConfig{Type: "test"},
+					}},
+				},
+				{
+					Name:   "br-0000_86_00.2",
+					Bridge: v1.OVSBridgeConfig{DatapathType: "foo"},
+					Uplinks: []v1.OVSUplinkConfigExt{{
+						Name:       "ens803f2",
+						PciAddress: "0000:86:00.2",
+						Interface:  v1.OVSInterfaceConfig{Type: "bar"},
+					}},
+				},
+			}},
+		},
+	}
+	for _, tc := range testtable {
+		t.Run(tc.tname, func(t *testing.T) {
+			err := tc.policy.ApplyBridgeConfig(tc.currentState)
+			if tc.expectedErr && err == nil {
+				t.Errorf("ApplyBridgeConfig expecting error.")
+			} else if !tc.expectedErr && err != nil {
+				t.Errorf("ApplyBridgeConfig error:\n%s", err)
+			}
+			if diff := cmp.Diff(tc.expectedBridges, tc.currentState.Spec.Bridges); diff != "" {
+				t.Errorf("SriovNetworkNodeState spec diff (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestGenerateBridgeName(t *testing.T) {
+	result := v1.GenerateBridgeName(&v1.InterfaceExt{PciAddress: "0000:86:00.2"})
+	expected := "br-0000_86_00.2"
+	if result != expected {
+		t.Errorf("GenerateBridgeName unexpected result, expected: %s, actual: %s", expected, result)
+	}
+}
+
+func TestNeedToUpdateBridges(t *testing.T) {
+	testtable := []struct {
+		tname          string
+		specBridge     *v1.Bridges
+		statusBridge   *v1.Bridges
+		expectedResult bool
+	}{
+		{
+			tname:          "no update required",
+			specBridge:     &v1.Bridges{OVS: []v1.OVSConfigExt{{Bridge: v1.OVSBridgeConfig{DatapathType: "test"}}}},
+			statusBridge:   &v1.Bridges{OVS: []v1.OVSConfigExt{{Bridge: v1.OVSBridgeConfig{DatapathType: "test"}}}},
+			expectedResult: false,
+		},
+		{
+			tname:          "update required",
+			specBridge:     &v1.Bridges{OVS: []v1.OVSConfigExt{{Bridge: v1.OVSBridgeConfig{DatapathType: "test"}}}},
+			statusBridge:   &v1.Bridges{OVS: []v1.OVSConfigExt{}},
+			expectedResult: true,
+		},
+	}
+	for _, tc := range testtable {
+		t.Run(tc.tname, func(t *testing.T) {
+			result := v1.NeedToUpdateBridges(tc.specBridge, tc.statusBridge)
+			if result != tc.expectedResult {
+				t.Errorf("unexpected result want: %t got: %t", tc.expectedResult, result)
+			}
+		})
+	}
+}
+
+func TestResolveInterfaceName(t *testing.T) {
+	testCases := []struct {
+		name           string
+		inputName      string
+		nodeState      *v1.SriovNetworkNodeState
+		expectedResult string
+	}{
+		{
+			name:           "nil nodeState returns name unchanged",
+			inputName:      "eth0",
+			nodeState:      nil,
+			expectedResult: "eth0",
+		},
+		{
+			name:      "name matches primary interface name",
+			inputName: "ens803f0",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{"alt1", "alt2"}},
+						{Name: "ens803f1", AltNames: []string{"alt3"}},
+					},
+				},
+			},
+			expectedResult: "ens803f0",
+		},
+		{
+			name:      "name matches first alternative name",
+			inputName: "alt1",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{"alt1", "alt2"}},
+						{Name: "ens803f1", AltNames: []string{"alt3"}},
+					},
+				},
+			},
+			expectedResult: "ens803f0",
+		},
+		{
+			name:      "name matches second alternative name",
+			inputName: "alt2",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{"alt1", "alt2"}},
+						{Name: "ens803f1", AltNames: []string{"alt3"}},
+					},
+				},
+			},
+			expectedResult: "ens803f0",
+		},
+		{
+			name:      "name matches alternative name of different interface",
+			inputName: "alt3",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{"alt1", "alt2"}},
+						{Name: "ens803f1", AltNames: []string{"alt3"}},
+					},
+				},
+			},
+			expectedResult: "ens803f1",
+		},
+		{
+			name:      "name not found returns unchanged",
+			inputName: "nonexistent",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{"alt1", "alt2"}},
+						{Name: "ens803f1", AltNames: []string{"alt3"}},
+					},
+				},
+			},
+			expectedResult: "nonexistent",
+		},
+		{
+			name:      "interface with empty alt names",
+			inputName: "notfound",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{
+						{Name: "ens803f0", AltNames: []string{}},
+						{Name: "ens803f1", AltNames: nil},
+					},
+				},
+			},
+			expectedResult: "notfound",
+		},
+		{
+			name:      "empty nodeState interfaces",
+			inputName: "eth0",
+			nodeState: &v1.SriovNetworkNodeState{
+				Status: v1.SriovNetworkNodeStateStatus{
+					Interfaces: []v1.InterfaceExt{},
+				},
+			},
+			expectedResult: "eth0",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := v1.ResolveInterfaceName(tc.inputName, tc.nodeState)
+			if result != tc.expectedResult {
+				t.Errorf("ResolveInterfaceName(%q, nodeState) = %q, want %q", tc.inputName, result, tc.expectedResult)
+			}
+		})
+	}
+}
+
+// TestPoolGetNodeSelector checks selector defaults, matching, validation, and immutability.
+func TestPoolGetNodeSelector(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selector *metav1.LabelSelector
+		matches  bool
+		invalid  bool
+	}{
+		{name: "nil matches all nodes", matches: true},
+		{name: "empty matches all nodes", selector: &metav1.LabelSelector{}, matches: true},
+		{name: "matching labels", selector: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "worker"}}, matches: true},
+		{name: "nonmatching labels", selector: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "master"}}},
+		{name: "matching expression", selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "role", Operator: metav1.LabelSelectorOpExists}}}, matches: true},
+		{name: "invalid expression", selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "role", Operator: "invalid"}}}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := &v1.SriovNetworkPoolConfig{Spec: v1.SriovNetworkPoolConfigSpec{NodeSelector: tc.selector}}
+			original := pool.DeepCopy()
+			selector, err := pool.GetNodeSelector()
+			assert.Equal(t, original, pool, "selector conversion must not mutate the pool")
+			if tc.invalid {
+				assert.Error(t, err)
+				return
+			}
+			if assert.NoError(t, err) {
+				assert.Equal(t, tc.matches, selector.Matches(labels.Set{"role": "worker"}))
+				if tc.selector == nil || tc.name == "empty matches all nodes" {
+					assert.True(t, selector.Matches(labels.Set{}))
+				}
+			}
+		})
+	}
+}
+
+var _ = Describe("Source revision helpers", func() {
+	It("sets and clears annotations without removing unrelated values", func() {
+		obj := &metav1.ObjectMeta{}
+		v1.SetAnnotationKey(obj, "revision", "")
+		Expect(obj.Annotations).To(BeNil())
+		v1.SetAnnotationKey(obj, "unrelated", "preserved")
+		v1.SetAnnotationKey(obj, "revision", "first")
+		v1.SetAnnotationKey(obj, "revision", "second")
+		Expect(obj.Annotations).To(Equal(map[string]string{"unrelated": "preserved", "revision": "second"}))
+		v1.SetAnnotationKey(obj, "revision", "")
+		Expect(obj.Annotations).To(Equal(map[string]string{"unrelated": "preserved"}))
+	})
+
+	It("replaces policy revisions and rejects stale or malformed stamps", func() {
+		policy := &v1.SriovNetworkNodePolicy{ObjectMeta: metav1.ObjectMeta{Name: "policy", UID: "policy-uid", Generation: 2}}
+		state := &v1.SriovNetworkNodeState{ObjectMeta: metav1.ObjectMeta{Generation: 3}}
+		Expect(state.SetPolicyRevisions(map[string]v1.SourceRevision{
+			policy.Name: {UID: policy.UID, Generation: policy.Generation},
+		})).To(Succeed())
+		Expect(policy.RevisionMatchesInNodeState(state)).To(BeTrue())
+		Expect(state.Generation).To(Equal(int64(3)))
+		changed := policy.DeepCopy()
+		changed.Generation++
+		Expect(changed.RevisionMatchesInNodeState(state)).To(BeFalse())
+		changed = policy.DeepCopy()
+		changed.UID = "replacement-uid"
+		Expect(changed.RevisionMatchesInNodeState(state)).To(BeFalse())
+		changed = policy.DeepCopy()
+		changed.Name = "other"
+		Expect(changed.RevisionMatchesInNodeState(state)).To(BeFalse())
+		Expect(state.SetPolicyRevisions(map[string]v1.SourceRevision{})).To(Succeed())
+		Expect(policy.RevisionMatchesInNodeState(state)).To(BeFalse())
+		state.Annotations[consts.NodeStatePolicyRevisionsAnnotation] = "invalid JSON"
+		Expect(policy.RevisionMatchesInNodeState(state)).To(BeFalse())
+		state.Annotations = nil
+		Expect(policy.RevisionMatchesInNodeState(state)).To(BeFalse())
+	})
+
+	It("stamps pool identity on any metadata object and clears it with a nil pool", func() {
+		pool := &v1.SriovNetworkPoolConfig{ObjectMeta: metav1.ObjectMeta{Name: "pool", UID: "pool-uid", Generation: 2}}
+		obj := &metav1.ObjectMeta{Annotations: map[string]string{"unrelated": "preserved"}}
+		Expect(pool.RevisionMatchesInObject(obj)).To(BeFalse())
+		Expect(pool.SetRevisionOnObject(obj)).To(Succeed())
+		Expect(pool.RevisionMatchesInObject(obj)).To(BeTrue())
+		changed := pool.DeepCopy()
+		changed.Generation++
+		Expect(changed.RevisionMatchesInObject(obj)).To(BeFalse())
+		changed = pool.DeepCopy()
+		changed.UID = "replacement-uid"
+		Expect(changed.RevisionMatchesInObject(obj)).To(BeFalse())
+		changed = pool.DeepCopy()
+		changed.Name = "other"
+		Expect(changed.RevisionMatchesInObject(obj)).To(BeFalse())
+		obj.Annotations[consts.PoolRevisionAnnotation] = "invalid JSON"
+		Expect(pool.RevisionMatchesInObject(obj)).To(BeFalse())
+		var noPool *v1.SriovNetworkPoolConfig
+		Expect(noPool.SetRevisionOnObject(obj)).To(Succeed())
+		Expect(obj.Annotations).To(Equal(map[string]string{"unrelated": "preserved"}))
+	})
+
+	DescribeTable("matches policy selectors against discovered interfaces",
+		func(selector v1.SriovNetworkNicSelector, expected bool) {
+			policy := &v1.SriovNetworkNodePolicy{Spec: v1.SriovNetworkNodePolicySpec{NicSelector: selector}}
+			state := &v1.SriovNetworkNodeState{Status: v1.SriovNetworkNodeStateStatus{
+				Interfaces: v1.InterfaceExts{{Name: "ens1", AltNames: []string{"pf0"}, PciAddress: "0000:01:00.0"}},
+			}}
+			Expect(policy.MatchesInterfaceInNodeState(state)).To(Equal(expected))
+			state.Status.Interfaces = nil
+			Expect(policy.MatchesInterfaceInNodeState(state)).To(BeFalse())
+		},
+		Entry("empty selector", v1.SriovNetworkNicSelector{}, false),
+		Entry("matching interface", v1.SriovNetworkNicSelector{PfNames: []string{"ens1"}}, true),
+		Entry("matching alternate name", v1.SriovNetworkNicSelector{PfNames: []string{"pf0"}}, true),
+		Entry("matching PCI address", v1.SriovNetworkNicSelector{RootDevices: []string{"0000:01:00.0"}}, true),
+		Entry("nonmatching interface", v1.SriovNetworkNicSelector{PfNames: []string{"ens2"}}, false),
+	)
+})
+
+// TestPoolConfigOvsSerialization checks that omitted and explicit OVS settings stay distinct.
+func TestPoolConfigOvsSerialization(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ovs     *v1.OvsHardwareOffloadConfig
+		present bool
+	}{
+		{name: "drain only"},
+		{name: "explicit empty", ovs: &v1.OvsHardwareOffloadConfig{}, present: true},
+		{name: "configured", ovs: &v1.OvsHardwareOffloadConfig{OvsConfig: map[string]string{"hw-offload": "true"}}, present: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := &v1.SriovNetworkPoolConfig{Spec: v1.SriovNetworkPoolConfigSpec{
+				NodeSelector:             &metav1.LabelSelector{MatchLabels: map[string]string{"role": "worker"}},
+				MaxUnavailable:           &intstrutil.IntOrString{IntVal: 1},
+				OvsHardwareOffloadConfig: tc.ovs,
+			}}
+			encoded, err := json.Marshal(pool)
+			if !assert.NoError(t, err) {
+				return
+			}
+			var decoded map[string]interface{}
+			if !assert.NoError(t, json.Unmarshal(encoded, &decoded)) {
+				return
+			}
+			_, present := decoded["spec"].(map[string]interface{})["ovsHardwareOffloadConfig"]
+			assert.Equal(t, tc.present, present)
+			var roundTrip v1.SriovNetworkPoolConfig
+			if assert.NoError(t, json.Unmarshal(encoded, &roundTrip)) {
+				assert.Equal(t, tc.ovs, roundTrip.Spec.OvsHardwareOffloadConfig)
+			}
+		})
+	}
+}
+
+// TestPoolHasHostConfigurations checks whether pool settings require host configuration.
+func TestPoolHasHostConfigurations(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		spec     v1.SriovNetworkPoolConfigSpec
+		expected bool
+	}{
+		{name: "drain only"},
+		{name: "RDMA", spec: v1.SriovNetworkPoolConfigSpec{RdmaMode: "shared"}, expected: true},
+		{name: "empty OVS", spec: v1.SriovNetworkPoolConfigSpec{OvsHardwareOffloadConfig: &v1.OvsHardwareOffloadConfig{}}},
+		{name: "empty OVS options", spec: v1.SriovNetworkPoolConfigSpec{OvsHardwareOffloadConfig: &v1.OvsHardwareOffloadConfig{OvsConfig: map[string]string{}}}},
+		{name: "named pool without host settings", spec: v1.SriovNetworkPoolConfigSpec{OvsHardwareOffloadConfig: &v1.OvsHardwareOffloadConfig{Name: "pool"}}},
+		{name: "OVS enabled", spec: v1.SriovNetworkPoolConfigSpec{OvsHardwareOffloadConfig: &v1.OvsHardwareOffloadConfig{OvsConfig: map[string]string{"hw-offload": "true"}}}, expected: true},
+		{name: "OVS disabled", spec: v1.SriovNetworkPoolConfigSpec{OvsHardwareOffloadConfig: &v1.OvsHardwareOffloadConfig{OvsConfig: map[string]string{"hw-offload": "false"}}}, expected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := &v1.SriovNetworkPoolConfig{Spec: tc.spec}
+			assert.Equal(t, tc.expected, pool.HasHostConfigurations())
 		})
 	}
 }
