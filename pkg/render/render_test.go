@@ -1,10 +1,46 @@
 package render
 
 import (
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 )
+
+func TestRenderOvsVswitchdDropin(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		otherOvsConfig string
+		externalIds    string
+		commandCount   int
+	}{
+		{name: "empty", commandCount: 2},
+		{name: "configured", otherOvsConfig: `"other_config:hw-offload=true"`, externalIds: "hw-offload", commandCount: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			d := MakeRenderData()
+			d.Data["OtherOvsConfig"] = tt.otherOvsConfig
+			d.Data["ExternalIds"] = tt.externalIds
+			rendered, err := renderFileTemplate("../../bindata/manifests/switchdev-config/ovs-units/ovs-vswitchd.service.yaml", &d)
+			g.Expect(err).NotTo(HaveOccurred())
+			var manifest map[string]interface{}
+			g.Expect(yaml.Unmarshal(rendered.Bytes(), &manifest)).To(Succeed())
+			dropin := manifest["dropins"].([]interface{})[0].(map[string]interface{})
+			contents := dropin["contents"].(string)
+			g.Expect(strings.Count(contents, "ExecStartPre=")).To(Equal(tt.commandCount))
+			g.Expect(contents).To(ContainSubstring(`external_ids:sriov-operator-owned-keys=` + tt.externalIds + `"`))
+			g.Expect(contents).To(ContainSubstring("remove Open_vSwitch . other_config"))
+			setCommand := "ExecStartPre=:/bin/ovs-vsctl --no-wait set Open_vSwitch . "
+			if tt.otherOvsConfig == "" {
+				g.Expect(contents).NotTo(ContainSubstring(setCommand))
+			} else {
+				g.Expect(contents).To(ContainSubstring(setCommand + tt.otherOvsConfig + "\n"))
+			}
+		})
+	}
+}
 
 // TestRenderSimple tests rendering a single object with no templates
 func TestRenderSimple(t *testing.T) {
@@ -12,7 +48,7 @@ func TestRenderSimple(t *testing.T) {
 
 	d := MakeRenderData()
 
-	o1, err := RenderTemplate("testdata/manifests/simple.yaml", &d)
+	o1, err := RenderFileTemplate("testdata/manifests/simple.yaml", &d)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(o1).To(HaveLen(1))
@@ -36,7 +72,7 @@ func TestRenderSimple(t *testing.T) {
 	g.Expect(o1[0].MarshalJSON()).To(MatchJSON(expected))
 
 	// test that json parses the same
-	o2, err := RenderTemplate("testdata/manifests/simple.json", &d)
+	o2, err := RenderFileTemplate("testdata/manifests/simple.json", &d)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(o2).To(Equal(o1))
 }
@@ -47,7 +83,7 @@ func TestRenderMultiple(t *testing.T) {
 	p := "testdata/manifests/multiple.yaml"
 	d := MakeRenderData()
 
-	o, err := RenderTemplate(p, &d)
+	o, err := RenderFileTemplate(p, &d)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(o).To(HaveLen(3))
@@ -64,19 +100,19 @@ func TestTemplate(t *testing.T) {
 
 	// Test that missing variables are detected
 	d := MakeRenderData()
-	_, err := RenderTemplate(p, &d)
+	_, err := RenderFileTemplate(p, &d)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(HaveSuffix(`function "fname" not defined`))
 
 	// Set expected function (but not variable)
 	d.Funcs["fname"] = func(s string) string { return "test-" + s }
-	_, err = RenderTemplate(p, &d)
+	_, err = RenderFileTemplate(p, &d)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(HaveSuffix(`has no entry for key "Namespace"`))
 
 	// now we can render
 	d.Data["Namespace"] = "myns"
-	o, err := RenderTemplate(p, &d)
+	o, err := RenderFileTemplate(p, &d)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(o[0].GetName()).To(Equal("test-podname"))
@@ -95,7 +131,7 @@ func TestTemplateWithEmptyObject(t *testing.T) {
 
 	d := MakeRenderData()
 	d.Data["Enable"] = true
-	o, err := RenderTemplate(p, &d)
+	o, err := RenderFileTemplate(p, &d)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(len(o)).To(Equal(2))

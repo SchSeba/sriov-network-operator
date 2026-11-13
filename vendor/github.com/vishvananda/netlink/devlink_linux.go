@@ -1,6 +1,7 @@
 package netlink
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -45,15 +46,21 @@ type DevlinkPortFnSetAttrs struct {
 
 // DevlinkPort represents port and its attributes
 type DevlinkPort struct {
-	BusName        string
-	DeviceName     string
-	PortIndex      uint32
-	PortType       uint16
-	NetdeviceName  string
-	NetdevIfIndex  uint32
-	RdmaDeviceName string
-	PortFlavour    uint16
-	Fn             *DevlinkPortFn
+	BusName          string
+	DeviceName       string
+	PortIndex        uint32
+	PortType         uint16
+	NetdeviceName    string
+	NetdevIfIndex    uint32
+	RdmaDeviceName   string
+	PortFlavour      uint16
+	Fn               *DevlinkPortFn
+	PortNumber       *uint32
+	PfNumber         *uint16
+	VfNumber         *uint16
+	SfNumber         *uint32
+	ControllerNumber *uint32
+	External         *bool
 }
 
 type DevLinkPortAddAttrs struct {
@@ -466,6 +473,8 @@ func (h *Handle) getEswitchAttrs(family *GenlFamily, dev *DevlinkDevice) {
 
 // DevLinkGetDeviceList provides a pointer to devlink devices and nil error,
 // otherwise returns an error code.
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) DevLinkGetDeviceList() ([]*DevlinkDevice, error) {
 	f, err := h.GenlFamilyGet(nl.GENL_DEVLINK_NAME)
 	if err != nil {
@@ -478,9 +487,9 @@ func (h *Handle) DevLinkGetDeviceList() ([]*DevlinkDevice, error) {
 	req := h.newNetlinkRequest(int(f.ID),
 		unix.NLM_F_REQUEST|unix.NLM_F_ACK|unix.NLM_F_DUMP)
 	req.AddData(msg)
-	msgs, err := req.Execute(unix.NETLINK_GENERIC, 0)
-	if err != nil {
-		return nil, err
+	msgs, executeErr := req.Execute(unix.NETLINK_GENERIC, 0)
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return nil, executeErr
 	}
 	devices, err := parseDevLinkDeviceList(msgs)
 	if err != nil {
@@ -489,11 +498,14 @@ func (h *Handle) DevLinkGetDeviceList() ([]*DevlinkDevice, error) {
 	for _, d := range devices {
 		h.getEswitchAttrs(f, d)
 	}
-	return devices, nil
+	return devices, executeErr
 }
 
 // DevLinkGetDeviceList provides a pointer to devlink devices and nil error,
 // otherwise returns an error code.
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func DevLinkGetDeviceList() ([]*DevlinkDevice, error) {
 	return pkgHandle.DevLinkGetDeviceList()
 }
@@ -623,6 +635,24 @@ func (port *DevlinkPort) parseAttributes(attrs []syscall.NetlinkRouteAttr) error
 					port.Fn.OpState = uint8(nested.Value[0])
 				}
 			}
+		case nl.DEVLINK_ATTR_PORT_NUMBER:
+			val := native.Uint32(a.Value)
+			port.PortNumber = &val
+		case nl.DEVLINK_ATTR_PORT_PCI_PF_NUMBER:
+			val := native.Uint16(a.Value)
+			port.PfNumber = &val
+		case nl.DEVLINK_ATTR_PORT_PCI_VF_NUMBER:
+			val := native.Uint16(a.Value)
+			port.VfNumber = &val
+		case nl.DEVLINK_ATTR_PORT_PCI_SF_NUMBER:
+			val := native.Uint32(a.Value)
+			port.SfNumber = &val
+		case nl.DEVLINK_ATTR_PORT_CONTROLLER_NUMBER:
+			val := native.Uint32(a.Value)
+			port.ControllerNumber = &val
+		case nl.DEVLINK_ATTR_PORT_EXTERNAL:
+			val := uint8(a.Value[0]) != 0
+			port.External = &val
 		}
 	}
 	return nil
@@ -646,6 +676,8 @@ func parseDevLinkAllPortList(msgs [][]byte) ([]*DevlinkPort, error) {
 
 // DevLinkGetPortList provides a pointer to devlink ports and nil error,
 // otherwise returns an error code.
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) DevLinkGetAllPortList() ([]*DevlinkPort, error) {
 	f, err := h.GenlFamilyGet(nl.GENL_DEVLINK_NAME)
 	if err != nil {
@@ -658,19 +690,21 @@ func (h *Handle) DevLinkGetAllPortList() ([]*DevlinkPort, error) {
 	req := h.newNetlinkRequest(int(f.ID),
 		unix.NLM_F_REQUEST|unix.NLM_F_ACK|unix.NLM_F_DUMP)
 	req.AddData(msg)
-	msgs, err := req.Execute(unix.NETLINK_GENERIC, 0)
-	if err != nil {
-		return nil, err
+	msgs, executeErr := req.Execute(unix.NETLINK_GENERIC, 0)
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return nil, executeErr
 	}
 	ports, err := parseDevLinkAllPortList(msgs)
 	if err != nil {
 		return nil, err
 	}
-	return ports, nil
+	return ports, executeErr
 }
 
 // DevLinkGetPortList provides a pointer to devlink ports and nil error,
 // otherwise returns an error code.
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func DevLinkGetAllPortList() ([]*DevlinkPort, error) {
 	return pkgHandle.DevLinkGetAllPortList()
 }
@@ -738,15 +772,18 @@ func (h *Handle) DevlinkGetDeviceResources(bus string, device string) (*DevlinkR
 
 // DevlinkGetDeviceParams returns parameters for devlink device
 // Equivalent to: `devlink dev param show <bus>/<device>`
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func (h *Handle) DevlinkGetDeviceParams(bus string, device string) ([]*DevlinkParam, error) {
 	_, req, err := h.createCmdReq(nl.DEVLINK_CMD_PARAM_GET, bus, device)
 	if err != nil {
 		return nil, err
 	}
 	req.Flags |= unix.NLM_F_DUMP
-	respmsg, err := req.Execute(unix.NETLINK_GENERIC, 0)
-	if err != nil {
-		return nil, err
+	respmsg, executeErr := req.Execute(unix.NETLINK_GENERIC, 0)
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return nil, executeErr
 	}
 	var params []*DevlinkParam
 	for _, m := range respmsg {
@@ -761,11 +798,14 @@ func (h *Handle) DevlinkGetDeviceParams(bus string, device string) ([]*DevlinkPa
 		params = append(params, p)
 	}
 
-	return params, nil
+	return params, executeErr
 }
 
 // DevlinkGetDeviceParams returns parameters for devlink device
 // Equivalent to: `devlink dev param show <bus>/<device>`
+//
+// If the returned error is [ErrDumpInterrupted], results may be inconsistent
+// or incomplete.
 func DevlinkGetDeviceParams(bus string, device string) ([]*DevlinkParam, error) {
 	return pkgHandle.DevlinkGetDeviceParams(bus, device)
 }
@@ -800,6 +840,43 @@ func (h *Handle) DevlinkGetDeviceParamByName(bus string, device string, param st
 // Equivalent to: `devlink dev param show <bus>/<device> name <param>`
 func DevlinkGetDeviceParamByName(bus string, device string, param string) (*DevlinkParam, error) {
 	return pkgHandle.DevlinkGetDeviceParamByName(bus, device, param)
+}
+
+// DevlinkSplitPort splits a devlink port.
+// Equivalent to: devlink port split <bus>/<device>/<index> count N
+func (h *Handle) DevlinkSplitPort(port *DevlinkPort, count uint32) error {
+	_, req, err := h.createCmdReq(nl.DEVLINK_CMD_PORT_SPLIT, port.BusName, port.DeviceName)
+	if err != nil {
+		return err
+	}
+
+	req.AddData(nl.NewRtAttr(nl.DEVLINK_ATTR_PORT_INDEX, nl.Uint32Attr(port.PortIndex)))
+	req.AddData(nl.NewRtAttr(nl.DEVLINK_ATTR_PORT_SPLIT_COUNT, nl.Uint32Attr(count)))
+
+	_, err = req.Execute(unix.NETLINK_GENERIC, 0)
+	return err
+}
+
+func DevlinkSplitPort(port *DevlinkPort, count uint32) error {
+	return pkgHandle.DevlinkSplitPort(port, count);
+}
+
+// DevlinkUnsplitPort: unsplit devlink port
+// Equivalent to devlink port unsplit <bus>/<device>/<index>
+func (h *Handle) DevlinkUnsplitPort(port *DevlinkPort) error {
+	_, req, err := h.createCmdReq(nl.DEVLINK_CMD_PORT_UNSPLIT, port.BusName, port.DeviceName)
+	if err != nil {
+		return err
+	}
+
+	req.AddData(nl.NewRtAttr(nl.DEVLINK_ATTR_PORT_INDEX, nl.Uint32Attr(port.PortIndex)))
+
+	_, err = req.Execute(unix.NETLINK_GENERIC, 0)
+	return err
+}
+
+func DevlinkUnsplitPort(port *DevlinkPort) error {
+	return pkgHandle.DevlinkUnsplitPort(port);
 }
 
 // DevlinkSetDeviceParam set specific parameter for devlink device

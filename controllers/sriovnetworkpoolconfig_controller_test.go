@@ -4,21 +4,18 @@ import (
 	"context"
 	"sync"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
+	"go.uber.org/mock/gomock"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/golang/mock/gomock"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
-
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
-	constants "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
-	mock_platforms "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/mock"
-	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms/openshift"
+	orchestratorMock "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/orchestrator/mock"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/test/util"
 )
@@ -31,7 +28,7 @@ var _ = Describe("SriovNetworkPoolConfig controller", Ordered, func() {
 		By("Create default SriovNetworkPoolConfig k8s objs")
 		poolConfig := &sriovnetworkv1.SriovNetworkPoolConfig{}
 		poolConfig.SetNamespace(testNamespace)
-		poolConfig.SetName(constants.DefaultConfigName)
+		poolConfig.SetName(consts.DefaultConfigName)
 		poolConfig.Spec = sriovnetworkv1.SriovNetworkPoolConfigSpec{}
 		Expect(k8sClient.Create(context.Background(), poolConfig)).Should(Succeed())
 		DeferCleanup(func() {
@@ -45,15 +42,22 @@ var _ = Describe("SriovNetworkPoolConfig controller", Ordered, func() {
 
 		t := GinkgoT()
 		mockCtrl := gomock.NewController(t)
-		platformHelper := mock_platforms.NewMockInterface(mockCtrl)
-		platformHelper.EXPECT().GetFlavor().Return(openshift.OpenshiftFlavorDefault).AnyTimes()
-		platformHelper.EXPECT().IsOpenshiftCluster().Return(false).AnyTimes()
-		platformHelper.EXPECT().IsHypershift().Return(false).AnyTimes()
+		orchestrator := orchestratorMock.NewMockInterface(mockCtrl)
+
+		orchestrator.EXPECT().ClusterType().DoAndReturn(func() consts.ClusterType {
+			if vars.ClusterType == consts.ClusterTypeOpenshift {
+				return consts.ClusterTypeOpenshift
+			}
+			return consts.ClusterTypeKubernetes
+		}).AnyTimes()
+
+		// TODO: Change this to add tests for hypershift
+		orchestrator.EXPECT().Flavor().Return(consts.ClusterFlavorDefault).AnyTimes()
 
 		err = (&SriovNetworkPoolConfigReconciler{
-			Client:         k8sManager.GetClient(),
-			Scheme:         k8sManager.GetScheme(),
-			PlatformHelper: platformHelper,
+			Client:       k8sManager.GetClient(),
+			Scheme:       k8sManager.GetScheme(),
+			Orchestrator: orchestrator,
 		}).SetupWithManager(k8sManager)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -87,7 +91,7 @@ var _ = Describe("SriovNetworkPoolConfig controller", Ordered, func() {
 			config.SetName("ovs-hw-offload-config")
 			mcpName := "worker-hwoffload"
 			mc := &mcfgv1.MachineConfig{}
-			mcName := "00-" + mcpName + "-" + constants.OVSHWOLMachineConfigNameSuffix
+			mcName := "00-" + mcpName + "-" + consts.OVSHWOLMachineConfigNameSuffix
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: mcName, Namespace: testNamespace}, mc)
 			Expect(errors.IsNotFound(err)).Should(BeTrue())
 
@@ -114,7 +118,7 @@ var _ = Describe("SriovNetworkPoolConfig controller", Ordered, func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 
-			config.Spec.OvsHardwareOffloadConfig = sriovnetworkv1.OvsHardwareOffloadConfig{
+			config.Spec.OvsHardwareOffloadConfig = &sriovnetworkv1.OvsHardwareOffloadConfig{
 				Name: mcpName,
 			}
 			err = k8sClient.Create(ctx, config)
@@ -122,6 +126,10 @@ var _ = Describe("SriovNetworkPoolConfig controller", Ordered, func() {
 			DeferCleanup(func() {
 				err = k8sClient.Delete(ctx, config)
 				Expect(err).ToNot(HaveOccurred())
+				// Finish finalization before deleting the MachineConfigPool or stopping its controller.
+				Eventually(func() bool {
+					return errors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, config))
+				}, util.APITimeout, util.RetryInterval).Should(BeTrue())
 			})
 
 			Eventually(func() error {
