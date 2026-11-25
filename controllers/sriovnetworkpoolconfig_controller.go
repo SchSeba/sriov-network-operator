@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 
-	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,20 +18,22 @@ import (
 
 	sriovnetworkv1 "github.com/k8snetworkplumbingwg/sriov-network-operator/api/v1"
 	constants "github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/consts"
-	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/platforms"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/orchestrator"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/render"
+	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/utils"
 	"github.com/k8snetworkplumbingwg/sriov-network-operator/pkg/vars"
 )
 
 // SriovNetworkPoolConfigReconciler reconciles a SriovNetworkPoolConfig object
 type SriovNetworkPoolConfigReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	PlatformHelper platforms.Interface
+	Scheme       *runtime.Scheme
+	Orchestrator orchestrator.Interface
 }
 
 const (
-	mcPriority string = "00-"
+	mcPriority     = "00-"
+	masterPoolName = "master"
 )
 
 //+kubebuilder:rbac:groups=sriovnetwork.openshift.io,resources=sriovnetworkpoolconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -49,13 +51,14 @@ const (
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.6.4/pkg/reconcile
 func (r *SriovNetworkPoolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("sriovnetworkpoolconfig", req.NamespacedName)
+
 	isHypershift := false
-	if r.PlatformHelper.IsOpenshiftCluster() {
-		if r.PlatformHelper.IsHypershift() {
-			isHypershift = true
-		}
+	if r.Orchestrator.ClusterType() == constants.ClusterTypeOpenshift &&
+		r.Orchestrator.Flavor() == constants.ClusterFlavorHypershift {
+		isHypershift = true
 		logger = logger.WithValues("isHypershift", isHypershift)
 	}
+
 	logger.Info("Reconciling")
 
 	// Fetch SriovNetworkPoolConfig
@@ -74,7 +77,7 @@ func (r *SriovNetworkPoolConfigReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// we don't need a finalizer for pools that doesn't use the ovs hardware offload feature
-	if instance.Spec.OvsHardwareOffloadConfig.Name == "" {
+	if instance.Spec.OvsHardwareOffloadConfig == nil || instance.Spec.OvsHardwareOffloadConfig.Name == "" {
 		return ctrl.Result{}, nil
 	}
 
@@ -146,7 +149,7 @@ func (r *SriovNetworkPoolConfigReconciler) syncOvsHardwareOffloadMachineConfigs(
 		return nil
 	}
 
-	if mcpName == "master" {
+	if mcpName == masterPoolName {
 		logger.Info("Master nodes are selected by OvsHardwareOffloadConfig.Name, ignoring.")
 		return nil
 	}
@@ -159,8 +162,17 @@ func (r *SriovNetworkPoolConfigReconciler) syncOvsHardwareOffloadMachineConfigs(
 	}
 
 	data := render.MakeRenderData()
+	externalIds, otherOvsConfig, err := utils.RenderOtherOvsConfigOption(nc.Spec.OvsHardwareOffloadConfig.OvsConfig)
+	if err != nil {
+		return err
+	}
+	data.Data["OtherOvsConfig"] = otherOvsConfig
+	data.Data["ExternalIds"] = externalIds
 	mc, err := render.GenerateMachineConfig("bindata/manifests/switchdev-config", mcName, mcpName, true, &data)
 	if err != nil {
+		return err
+	}
+	if err := nc.SetRevisionOnObject(mc); err != nil {
 		return err
 	}
 
@@ -196,7 +208,7 @@ func (r *SriovNetworkPoolConfigReconciler) syncOvsHardwareOffloadMachineConfigs(
 			// ignition and compare.
 			json.Unmarshal(foundMC.Spec.Config.Raw, &foundIgn)
 			json.Unmarshal(mc.Spec.Config.Raw, &renderedIgn)
-			if !reflect.DeepEqual(foundIgn, renderedIgn) {
+			if !equality.Semantic.DeepEqual(foundIgn, renderedIgn) || !nc.RevisionMatchesInObject(foundMC) {
 				logger.Info("MachineConfig already exists, updating")
 				mc.SetResourceVersion(foundMC.GetResourceVersion())
 				err = r.Update(ctx, mc)
